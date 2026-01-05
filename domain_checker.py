@@ -235,12 +235,6 @@ def save_domain_expiry_to_cache(main_domain: str, domain_expiry: str, domain_day
     cache[main_domain]['domain_days_left'] = domain_days_left
     cache[main_domain]['last_checked'] = datetime.now(timezone.utc).isoformat()
     
-    # Save WHOIS details if provided (and no error)
-    if whois_details and not whois_details.get('error'):
-        if 'domain_check_details' not in cache[main_domain]:
-            cache[main_domain]['domain_check_details'] = {}
-        cache[main_domain]['domain_check_details']['whois_info'] = whois_details
-    
     save_cache(cache)
 
 
