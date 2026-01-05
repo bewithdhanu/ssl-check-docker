@@ -83,17 +83,20 @@ def check_domains():
                 "status_code": 400
             }), 400
         
+        # Store original input for each domain
+        original_inputs = domains.copy()
+        
         # Check domains in parallel
         results = []
         with ThreadPoolExecutor(max_workers=min(len(domains), 10)) as executor:
-            future_to_domain = {executor.submit(check_ssl_certificate, domain): domain for domain in domains}
+            future_to_domain = {executor.submit(check_ssl_certificate, domain, domain): domain for domain in domains}
             for future in as_completed(future_to_domain):
                 try:
                     result = future.result()
                     results.append(result)
                 except Exception as e:
                     domain = future_to_domain[future]
-                    results.append({"domain": domain, "error": str(e)})
+                    results.append({"domain": domain, "input": domain, "error": str(e)})
         
         # Sort results to match input order
         domain_order = {domain: idx for idx, domain in enumerate(domains)}
