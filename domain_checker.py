@@ -447,6 +447,18 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
             timeout=10
         )
         
+        # Known TLD-specific WHOIS servers (fallback if default whois fails)
+        tld_whois_servers = {
+            'co': 'whois.registry.co',
+            'uk': 'whois.nominet.uk',
+            'au': 'whois.aunic.net',
+            'nz': 'whois.dnc.org.nz',
+        }
+        
+        # Extract TLD for fallback lookup
+        domain_parts = clean_domain.split('.')
+        tld = domain_parts[-1].lower() if len(domain_parts) > 1 else None
+        
         if result.stdout:
             whois_output = result.stdout
             whois_lower = whois_output.lower()
@@ -489,6 +501,19 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
                 if referral_result.stdout:
                     whois_output = referral_result.stdout
                     details["whois_server"] = whois_server
+        elif tld and tld in tld_whois_servers:
+            # Fallback: if default whois failed and we know the TLD-specific server, try it
+            fallback_server = tld_whois_servers[tld]
+            fallback_result = subprocess.run(
+                ['whois', '-h', fallback_server, clean_domain],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if fallback_result.stdout:
+                whois_output = fallback_result.stdout
+                details["whois_server"] = fallback_server
         
         if not whois_output:
             details["error"] = "No WHOIS output received"
