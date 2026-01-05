@@ -125,31 +125,60 @@ def should_refresh_cache(cached_entry: Dict[str, Any]) -> bool:
 
 
 def get_cached_domain_expiry(main_domain: str) -> Optional[str]:
-    """Get cached domain expiry for main domain."""
+    """
+    Get cached domain expiry for main domain using smart caching.
+    
+    Smart caching logic:
+    - If domain expires in >= 2 days: Use cache (don't refresh)
+    - If domain expires in < 2 days: Refresh if last check was >= 1 hour ago
+    """
     cache = load_cache()
     cached_entry = cache.get(main_domain)
     
-    if cached_entry and 'domain_expiry_date' in cached_entry:
-        # For domain expiry cache, check if it's recent (domain expiry doesn't change often)
-        # Domain expiry cache is valid for 24 hours
-        last_checked_str = cached_entry.get('last_checked')
-        if last_checked_str:
-            try:
-                last_checked = datetime.fromisoformat(last_checked_str.replace('Z', '+00:00'))
-                if last_checked.tzinfo is None:
-                    last_checked = last_checked.replace(tzinfo=timezone.utc)
-                
-                hours_since_check = (datetime.now(timezone.utc) - last_checked).total_seconds() / 3600
-                # Domain expiry cache valid for 24 hours
-                if hours_since_check < 24:
-                    return cached_entry.get('domain_expiry_date')
-            except (ValueError, TypeError):
-                pass
-        else:
-            # If no timestamp, assume it's valid (backward compatibility)
-            return cached_entry.get('domain_expiry_date')
+    if not cached_entry or 'domain_expiry_date' not in cached_entry:
+        return None
     
-    return None
+    last_checked_str = cached_entry.get('last_checked')
+    if not last_checked_str:
+        # If no timestamp, assume it's valid (backward compatibility)
+        return cached_entry.get('domain_expiry_date')
+    
+    try:
+        last_checked = datetime.fromisoformat(last_checked_str.replace('Z', '+00:00'))
+        if last_checked.tzinfo is None:
+            last_checked = last_checked.replace(tzinfo=timezone.utc)
+        
+        hours_since_check = (datetime.now(timezone.utc) - last_checked).total_seconds() / 3600
+        
+        # Get domain days left from cache
+        domain_days_left = cached_entry.get('domain_days_left')
+        if domain_days_left is None:
+            # If days left not in cache, try to calculate from expiry date
+            try:
+                expiry_date_str = cached_entry.get('domain_expiry_date')
+                if expiry_date_str:
+                    expiry_dt = datetime.strptime(expiry_date_str, '%Y-%m-%d %H:%M:%S')
+                    expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+                    now = datetime.now(timezone.utc)
+                    domain_days_left = (expiry_dt - now).days
+            except (ValueError, TypeError):
+                # If we can't calculate, use cache anyway (backward compatibility)
+                return cached_entry.get('domain_expiry_date')
+        
+        # Smart caching: similar to SSL caching
+        # If domain expires in less than 2 days, refresh if last check was >= 1 hour ago
+        if domain_days_left is not None and domain_days_left < CACHE_EXPIRY_THRESHOLD_DAYS:
+            if hours_since_check >= CACHE_REFRESH_INTERVAL_HOURS:
+                return None  # Need to refresh
+            else:
+                return cached_entry.get('domain_expiry_date')  # Use cache
+        
+        # If domain expires in >= 2 days, use cache (don't refresh)
+        return cached_entry.get('domain_expiry_date')
+        
+    except (ValueError, TypeError):
+        # If parsing fails, return cached value (backward compatibility)
+        return cached_entry.get('domain_expiry_date')
 
 
 def save_domain_expiry_to_cache(main_domain: str, domain_expiry: str, domain_days_left: int) -> None:
