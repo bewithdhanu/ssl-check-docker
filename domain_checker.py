@@ -14,6 +14,7 @@ import time
 import subprocess
 import urllib.request
 import urllib.error
+import re
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,36 +23,55 @@ from pathlib import Path
 
 # Pre-compile patterns and formats for better performance
 EXPIRY_PATTERNS = [
-    'registry expiry date:',
+    'registry expiry date:',  # Most common (ICANN standard)
     'expiry date:',
     'expiration date:',
     'expires:',
     'expires on:',
     'expiration:',
-    'paid-till:',
+    'paid-till:',  # Common in European registries
     'expire:',
     'expiry:',
     'registrar registration expiration date:',
     'expiration date',
+    'registry expiration date:',  # Alternative format
+    'expiry:',  # Short form
+    'renewal date:',  # Some registries
+    'valid until:',  # Alternative wording
+    'expires at:',  # Alternative wording
+    'expiration:',  # Without "date"
+    'paid until:',  # Alternative to paid-till
 ]
 
 DATE_FORMATS = [
-    '%Y-%m-%dT%H:%M:%SZ',
-    '%Y-%m-%dT%H:%M:%S',
-    '%Y-%m-%d %H:%M:%S',
-    '%Y-%m-%d',
-    '%d-%b-%Y',
-    '%d %b %Y',
-    '%b %d %Y',
-    '%Y/%m/%d',
-    '%d/%m/%Y',
-    '%m/%d/%Y',
-    '%d.%m.%Y',
-    '%Y.%m.%d',
-    '%Y%m%d',
+    '%Y-%m-%dT%H:%M:%SZ',  # ISO 8601 with Z
+    '%Y-%m-%dT%H:%M:%S.%fZ',  # ISO 8601 with milliseconds
+    '%Y-%m-%dT%H:%M:%S',  # ISO 8601 without timezone
+    '%Y-%m-%dT%H:%M:%S%z',  # ISO 8601 with timezone offset
+    '%Y-%m-%d %H:%M:%S',  # Standard format
+    '%Y-%m-%d',  # Date only
+    '%d-%b-%Y',  # DD-Mon-YYYY (e.g., 06-Aug-2026)
+    '%d %b %Y',  # DD Mon YYYY
+    '%b %d %Y',  # Mon DD YYYY
+    '%d-%B-%Y',  # DD-Month-YYYY (full month name)
+    '%d %B %Y',  # DD Month YYYY
+    '%B %d %Y',  # Month DD YYYY
+    '%Y/%m/%d',  # YYYY/MM/DD
+    '%d/%m/%Y',  # DD/MM/YYYY
+    '%m/%d/%Y',  # MM/DD/YYYY
+    '%d.%m.%Y',  # DD.MM.YYYY
+    '%Y.%m.%d',  # YYYY.MM.DD
+    '%Y%m%d',  # YYYYMMDD
+    '%d-%m-%Y',  # DD-MM-YYYY
+    '%Y-%m-%d %H:%M:%S.%f',  # With microseconds
 ]
 
-TIMEZONE_SUFFIXES = ['(utc)', '(gmt)', 'utc', 'gmt', '+00:00', '-00:00']
+TIMEZONE_SUFFIXES = [
+    '(utc)', '(gmt)', 'utc', 'gmt', '+00:00', '-00:00',
+    'utc+0', 'gmt+0', 'z', 'zulu',
+    '+0000', '-0000',  # Without colon
+    'utc+00:00', 'gmt+00:00',
+]
 
 # Cache configuration - can be overridden via CACHE_DIR environment variable
 CACHE_BASE_DIR = os.getenv('CACHE_DIR', '/tmp/ssl-checker-cache')
@@ -395,14 +415,28 @@ def _parse_expiry_date(date_part: str) -> Optional[str]:
     date_part = date_part.split('\n')[0].split('\t')[0].split('#')[0].split(';')[0].strip()
     
     # Handle ISO format with milliseconds (e.g., "2026-08-06T23:59:59.0Z")
+    # Also handle various millisecond formats
     if '.0Z' in date_part or '.Z' in date_part:
         date_part = date_part.replace('.0Z', 'Z').replace('.Z', 'Z')
+    
+    # Handle microseconds (e.g., "2026-08-06T23:59:59.123456Z")
+    if '.' in date_part and 'T' in date_part and 'Z' in date_part:
+        # Keep only up to 6 digits for microseconds, remove excess
+        date_part = re.sub(r'\.(\d{1,6})Z', r'.\1Z', date_part)
     
     # Remove timezone suffixes (but keep Z for ISO format)
     for suffix in TIMEZONE_SUFFIXES:
         if date_part.lower().endswith(suffix.lower()):
             date_part = date_part[:-len(suffix)].strip()
+    
+    # Remove parentheses and extra whitespace
     date_part = date_part.strip('()').strip()
+    
+    # Handle timezone offsets (e.g., "+02:00", "-05:00")
+    # Remove timezone offset for parsing, we'll assume UTC
+    import re
+    timezone_offset_pattern = r'[+-]\d{2}:?\d{2}$'
+    date_part = re.sub(timezone_offset_pattern, '', date_part).strip()
     
     # Try parsing with various formats
     date_str = date_part.split()[0] if date_part.split() else date_part
@@ -453,20 +487,57 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
         )
         
         # Known TLD-specific WHOIS servers (fallback if default whois fails)
+        # Expanded list based on common TLDs that require specific servers
         tld_whois_servers = {
             'co': 'whois.registry.co',
             'uk': 'whois.nominet.uk',
             'au': 'whois.aunic.net',
             'nz': 'whois.dnc.org.nz',
+            'de': 'whois.denic.de',
+            'fr': 'whois.afnic.fr',
+            'it': 'whois.nic.it',
+            'nl': 'whois.domain-registry.nl',
+            'be': 'whois.dns.be',
+            'ch': 'whois.nic.ch',
+            'at': 'whois.nic.at',
+            'se': 'whois.iis.se',
+            'no': 'whois.norid.no',
+            'dk': 'whois.dk-hostmaster.dk',
+            'pl': 'whois.dns.pl',
+            'ru': 'whois.tcinet.ru',
+            'jp': 'whois.jprs.jp',
+            'cn': 'whois.cnnic.net.cn',
+            'kr': 'whois.krnic.net',
+            'in': 'whois.inregistry.net',
+            'br': 'whois.registro.br',
+            'mx': 'whois.mx',
+            'ca': 'whois.cira.ca',
+            'io': 'whois.nic.io',
+            'ai': 'whois.nic.ai',
+            'tv': 'whois.tv',
+            'me': 'whois.nic.me',
+            'co.uk': 'whois.nominet.uk',  # Multi-part TLD
+            'com.au': 'whois.aunic.net',  # Multi-part TLD
+            'co.nz': 'whois.dnc.org.nz',  # Multi-part TLD
+            'co.za': 'whois.registry.net.za',  # Multi-part TLD
         }
         
-        # Extract TLD for fallback lookup
+        # Extract TLD for fallback lookup (handle multi-part TLDs)
         domain_parts = clean_domain.split('.')
-        tld = domain_parts[-1].lower() if len(domain_parts) > 1 else None
+        tld = None
+        if len(domain_parts) >= 2:
+            # Try two-part TLD first (e.g., co.uk, com.au)
+            two_part_tld = '.'.join(domain_parts[-2:]).lower()
+            if two_part_tld in tld_whois_servers:
+                tld = two_part_tld
+            else:
+                # Fall back to single-part TLD
+                tld = domain_parts[-1].lower()
         
         if result.stdout:
             whois_output = result.stdout
             whois_lower = whois_output.lower()
+            lines = whois_output.split('\n')  # Define lines early for use in referral checking
             
             # Check for referral to another WHOIS server (common for .co, .uk, etc.)
             # Look for patterns like "refer: whois.registry.co" or "whois: whois.registry.co"
@@ -479,7 +550,7 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
             
             for pattern in referral_patterns:
                 if pattern in whois_lower:
-                    for line in whois_output.split('\n'):
+                    for line in lines:
                         line_lower = line.lower()
                         if pattern in line_lower:
                             # Extract WHOIS server from referral
@@ -494,6 +565,19 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
                         break
             
             # If we found a referral and haven't found expiry date yet, query the referred server
+            # Also check for registrar-specific WHOIS server referrals
+            registrar_whois_server = None
+            for line in lines:
+                line_lower = line.lower()
+                if 'registrar whois server:' in line_lower:
+                    parts = line.split(':', 1)
+                    if len(parts) > 1:
+                        potential_server = parts[1].strip().split()[0].strip()
+                        if '.' in potential_server and not potential_server.startswith('http'):
+                            registrar_whois_server = potential_server
+                            break
+            
+            # Priority: 1) Registry referral, 2) Registrar referral, 3) Check if expiry already found
             if whois_server and 'registry expiry date:' not in whois_lower and 'expiry date:' not in whois_lower:
                 # Query the referred WHOIS server directly
                 referral_result = subprocess.run(
@@ -506,6 +590,22 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
                 if referral_result.stdout:
                     whois_output = referral_result.stdout
                     details["whois_server"] = whois_server
+                    whois_lower = whois_output.lower()  # Update for next checks
+                    lines = whois_output.split('\n')  # Update lines after referral
+            elif registrar_whois_server and 'registry expiry date:' not in whois_lower and 'expiry date:' not in whois_lower:
+                # Try registrar-specific WHOIS server as fallback
+                registrar_result = subprocess.run(
+                    ['whois', '-h', registrar_whois_server, clean_domain],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if registrar_result.stdout:
+                    whois_output = registrar_result.stdout
+                    details["whois_server"] = registrar_whois_server
+                    whois_lower = whois_output.lower()  # Update for next checks
+                    lines = whois_output.split('\n')  # Update lines after registrar lookup
         elif tld and tld in tld_whois_servers:
             # Fallback: if default whois failed and we know the TLD-specific server, try it
             fallback_server = tld_whois_servers[tld]
@@ -519,6 +619,22 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
             if fallback_result.stdout:
                 whois_output = fallback_result.stdout
                 details["whois_server"] = fallback_server
+                whois_lower = whois_output.lower()  # Update for next checks
+                lines = whois_output.split('\n')  # Define lines for fallback case
+        
+        # Check stderr for errors (some WHOIS servers return errors in stderr)
+        if result.stderr and not whois_output:
+            stderr_lower = result.stderr.lower()
+            # Common error patterns
+            if 'rate limit' in stderr_lower or 'too many' in stderr_lower:
+                details["error"] = "WHOIS rate limit exceeded - please try again later"
+                return None, details
+            elif 'not found' in stderr_lower or 'no match' in stderr_lower:
+                details["error"] = "Domain not found in WHOIS database"
+                return None, details
+            elif 'timeout' in stderr_lower or 'timed out' in stderr_lower:
+                details["error"] = "WHOIS query timeout"
+                return None, details
         
         if not whois_output:
             details["error"] = "No WHOIS output received"
@@ -530,6 +646,18 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
         
         # Extract additional information from WHOIS output
         lines = whois_output.split('\n')
+        
+        # Re-check for registrar WHOIS server if not already found
+        if not details.get("whois_server"):
+            for line in lines:
+                line_lower = line.lower()
+                if 'registrar whois server:' in line_lower:
+                    parts = line.split(':', 1)
+                    if len(parts) > 1:
+                        potential_server = parts[1].strip().split()[0].strip()
+                        if '.' in potential_server and not potential_server.startswith('http'):
+                            details["whois_server"] = potential_server
+                            break
         for line in lines:
             line_lower = line.lower().strip()
             
@@ -571,21 +699,41 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
                     details["whois_server"] = line.split(':', 1)[1].strip() if ':' in line else None
         
         # Search for expiry date patterns - stop at first match
+        # Handle multi-line expiry dates and comments
         for pattern in EXPIRY_PATTERNS:
             pattern_lower = pattern.lower()
             if pattern_lower not in whois_lower:
                 continue
             
-            # Find matching line
+            # Find matching line (skip comment lines starting with # or %)
             for line in lines:
+                # Skip comment lines
+                stripped_line = line.strip()
+                if stripped_line.startswith('#') or stripped_line.startswith('%'):
+                    continue
+                
                 line_lower = line.lower()
                 if pattern_lower in line_lower:
                     idx = line_lower.find(pattern_lower)
                     if idx >= 0:
+                        # Extract date part after the pattern
                         date_part = line[idx + len(pattern):].strip()
+                        
+                        # Handle cases where date might continue on next line
+                        if not date_part and len(lines) > lines.index(line) + 1:
+                            next_line = lines[lines.index(line) + 1].strip()
+                            if next_line and not next_line.startswith('#') and not next_line.startswith('%'):
+                                date_part = next_line
+                        
                         parsed_date = _parse_expiry_date(date_part)
                         if parsed_date:
                             return parsed_date, details
+        
+        # If no expiry found, check for domains that might not have expiry dates
+        # (some TLDs like .ai, .io might not show expiry in standard WHOIS)
+        if 'no expiry' in whois_lower or 'permanent' in whois_lower or 'never expires' in whois_lower:
+            details["error"] = "Domain does not have an expiry date (permanent registration)"
+            return None, details
         
         details["error"] = "Expiry date not found in WHOIS output"
         return None, details
