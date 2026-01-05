@@ -444,6 +444,56 @@ def _parse_expiry_date(date_part: str) -> Optional[str]:
     return None
 
 
+def _try_rdap_lookup(domain: str) -> Optional[str]:
+    """
+    Try to get domain expiry date using RDAP (Registration Data Access Protocol).
+    RDAP is a modern replacement for WHOIS that provides structured JSON data.
+    
+    Args:
+        domain: Domain name to check
+        
+    Returns:
+        Domain expiry date string in YYYY-MM-DD HH:MM:SS format or None
+    """
+    try:
+        import json
+        
+        # RDAP endpoint - try rdapserver.net first
+        rdap_url = f"https://rdapserver.net/domain/{domain}"
+        
+        req = urllib.request.Request(
+            rdap_url,
+            headers={
+                'Accept': 'application/json, application/rdap+json',
+                'User-Agent': 'Domain-Checker/1.0'
+            }
+        )
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            rdap_data = json.loads(response.read().decode())
+            
+            # Look for expiry date in events array
+            if 'events' in rdap_data:
+                for event in rdap_data['events']:
+                    if event.get('eventAction') == 'registrar expiration':
+                        expiry_date_str = event.get('eventDate')
+                        if expiry_date_str:
+                            # Parse ISO 8601 format (e.g., "2026-04-04T19:22:04Z")
+                            try:
+                                # Remove timezone and microseconds if present
+                                expiry_date_str = expiry_date_str.split('.')[0].replace('Z', '')
+                                expiry_date = datetime.strptime(expiry_date_str, '%Y-%m-%dT%H:%M:%S')
+                                expiry_date = expiry_date.replace(tzinfo=timezone.utc)
+                                return expiry_date.strftime('%Y-%m-%d %H:%M:%S')
+                            except (ValueError, AttributeError):
+                                pass
+        
+        return None
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, Exception):
+        # RDAP lookup failed, return None to fall back to WHOIS error
+        return None
+
+
 def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
     """
     Check domain expiry date using whois.
