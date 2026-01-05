@@ -627,7 +627,8 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
                 return None, details
         
         if not whois_output:
-            details["error"] = "No WHOIS output received"
+            # This is not necessarily an error - some TLDs don't provide WHOIS
+            details["error"] = "No WHOIS output received - domain may not support WHOIS lookup"
             return None, details
         
         whois_lower = whois_output.lower()
@@ -815,7 +816,18 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
                 pass
         elif whois_details.get('error'):
             # Don't cache failed WHOIS lookups - they will be retried next time
-            result["domain_error"] = whois_details.get('error')
+            error_msg = whois_details.get('error')
+            # Provide user-friendly error messages
+            if "No WHOIS output received" in error_msg:
+                result["domain_error"] = "WHOIS data not available for this domain"
+            elif "rate limit" in error_msg.lower():
+                result["domain_error"] = "WHOIS rate limit exceeded - please try again later"
+            elif "timeout" in error_msg.lower():
+                result["domain_error"] = "WHOIS query timeout"
+            elif "not found" in error_msg.lower():
+                result["domain_error"] = "Domain not found in WHOIS database"
+            else:
+                result["domain_error"] = f"WHOIS lookup failed: {error_msg}"
     
     return result
 
