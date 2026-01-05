@@ -414,6 +414,8 @@ def _parse_expiry_date(date_part: str) -> Optional[str]:
 def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
     """
     Check domain expiry date using whois.
+    Follows WHOIS referrals (like whois.registry.co for .co domains) similar to
+    https://github.com/ak545/dns-domain-expiration-checker
     
     Args:
         domain: Domain name to check
@@ -434,20 +436,64 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
     
     try:
         clean_domain = _clean_domain(domain)
+        whois_output = ""
+        whois_server = None
         
-        # Run whois command with reduced timeout
+        # First attempt: query default WHOIS server
         result = subprocess.run(
             ['whois', clean_domain],
             capture_output=True,
             text=True,
-            timeout=10  # Reduced from 15
+            timeout=10
         )
         
-        if not result.stdout:
+        if result.stdout:
+            whois_output = result.stdout
+            whois_lower = whois_output.lower()
+            
+            # Check for referral to another WHOIS server (common for .co, .uk, etc.)
+            # Look for patterns like "refer: whois.registry.co" or "whois: whois.registry.co"
+            referral_patterns = [
+                'refer:',
+                'whois:',
+                'whois server:',
+                'registrar whois server:'
+            ]
+            
+            for pattern in referral_patterns:
+                if pattern in whois_lower:
+                    for line in whois_output.split('\n'):
+                        line_lower = line.lower()
+                        if pattern in line_lower:
+                            # Extract WHOIS server from referral
+                            parts = line.split(':', 1)
+                            if len(parts) > 1:
+                                potential_server = parts[1].strip().split()[0].strip()
+                                # Validate it looks like a hostname
+                                if '.' in potential_server and not potential_server.startswith('http'):
+                                    whois_server = potential_server
+                                    break
+                    if whois_server:
+                        break
+            
+            # If we found a referral and haven't found expiry date yet, query the referred server
+            if whois_server and 'registry expiry date:' not in whois_lower and 'expiry date:' not in whois_lower:
+                # Query the referred WHOIS server directly
+                referral_result = subprocess.run(
+                    ['whois', '-h', whois_server, clean_domain],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if referral_result.stdout:
+                    whois_output = referral_result.stdout
+                    details["whois_server"] = whois_server
+        
+        if not whois_output:
             details["error"] = "No WHOIS output received"
             return None, details
         
-        whois_output = result.stdout
         details["raw_whois_preview"] = whois_output[:500]  # First 500 chars
         
         whois_lower = whois_output.lower()
