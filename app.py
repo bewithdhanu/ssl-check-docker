@@ -5,7 +5,7 @@ REST API wrapper for domain checker functionality.
 """
 
 from flask import Flask, request, jsonify
-from domain_checker import check_ssl_certificate
+from domain_checker import check_ssl_certificate, clear_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 
@@ -114,6 +114,60 @@ def check_domains():
             "status_code": 500
         }), 500
 
+@app.route('/cache/clear', methods=['POST', 'DELETE'])
+def clear_cache_endpoint():
+    """
+    Clear cache endpoint.
+    
+    POST /cache/clear
+    DELETE /cache/clear
+    Body (optional): {
+        "domains": ["example.com", "google.com"]  // If omitted, clears all cache
+    }
+    
+    Query parameter (optional): ?domains=example.com,google.com
+    
+    Returns:
+    - 200: Success - Cache cleared
+    - 400: Bad Request - Invalid input
+    """
+    try:
+        domains = []
+        
+        if request.method == 'POST':
+            if request.is_json:
+                data = request.get_json() or {}
+                domains_input = data.get('domains', [])
+                
+                # Handle both list and comma-separated string
+                if isinstance(domains_input, str):
+                    domains = [d.strip() for d in domains_input.split(',') if d.strip()]
+                elif isinstance(domains_input, list):
+                    domains = [str(d).strip() for d in domains_input if str(d).strip()]
+            else:
+                # POST without JSON body - check query params
+                domains_param = request.args.get('domains', '')
+                if domains_param:
+                    domains = [d.strip() for d in domains_param.split(',') if d.strip()]
+        else:
+            # DELETE request - check query params
+            domains_param = request.args.get('domains', '')
+            if domains_param:
+                domains = [d.strip() for d in domains_param.split(',') if d.strip()]
+        
+        # Clear cache (if domains is empty, clears all)
+        result = clear_cache(domains if domains else None)
+        result["status_code"] = 200
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Failed to clear cache",
+            "message": str(e),
+            "status_code": 500
+        }), 500
+
 @app.route('/', methods=['GET'])
 def index():
     """
@@ -130,7 +184,9 @@ def index():
             "GET /": "API documentation",
             "GET /health": "Health check (200: healthy)",
             "POST /check": "Check domain(s) - send JSON body with 'domains' array",
-            "GET /check": "Check domain(s) - use 'domains' query parameter (comma-separated)"
+            "GET /check": "Check domain(s) - use 'domains' query parameter (comma-separated)",
+            "POST /cache/clear": "Clear cache for specific domain(s) or all - send JSON body with optional 'domains' array",
+            "DELETE /cache/clear": "Clear cache for specific domain(s) or all - use 'domains' query parameter (comma-separated)"
         },
         "status_codes": {
             "200": "Success",
@@ -141,7 +197,12 @@ def index():
             "POST /check": {
                 "domains": ["example.com", "google.com"]
             },
-            "GET /check": "/check?domains=example.com,google.com"
+            "GET /check": "/check?domains=example.com,google.com",
+            "POST /cache/clear": {
+                "domains": ["example.com", "google.com"]
+            },
+            "DELETE /cache/clear": "/cache/clear?domains=example.com,google.com",
+            "POST /cache/clear (clear all)": "{}"
         }
     }), 200
 

@@ -292,6 +292,66 @@ def save_to_cache(domain: str, result: Dict[str, Any]) -> None:
     save_cache(cache)
 
 
+def clear_cache(domains: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    Clear cache for specific domains or all domains.
+    
+    Args:
+        domains: List of domains to clear cache for. If None or empty, clears all cache.
+                 Can include subdomains - will clear both subdomain and main domain cache.
+    
+    Returns:
+        Dictionary with cleared domains count and status
+    """
+    cache = load_cache()
+    
+    if not domains or len(domains) == 0:
+        # Clear all cache
+        cleared_count = len(cache)
+        cache.clear()
+        save_cache(cache)
+        return {
+            "status": "success",
+            "action": "cleared_all",
+            "domains_cleared": cleared_count,
+            "message": f"Cleared cache for all {cleared_count} domain(s)"
+        }
+    
+    # Clear specific domains
+    cleared_domains = []
+    main_domains_to_clear = set()
+    
+    for domain in domains:
+        clean_domain = _clean_domain(domain)
+        main_domain = _get_main_domain(clean_domain)
+        
+        # Remove domain-specific cache
+        if clean_domain in cache:
+            del cache[clean_domain]
+            cleared_domains.append(clean_domain)
+        
+        # Also clear main domain cache (for domain expiry)
+        if main_domain in cache:
+            main_domains_to_clear.add(main_domain)
+    
+    # Remove main domain cache entries
+    for main_domain in main_domains_to_clear:
+        if main_domain in cache:
+            del cache[main_domain]
+            if main_domain not in cleared_domains:
+                cleared_domains.append(main_domain)
+    
+    save_cache(cache)
+    
+    return {
+        "status": "success",
+        "action": "cleared_specific",
+        "domains_cleared": len(cleared_domains),
+        "cleared_domains": cleared_domains,
+        "message": f"Cleared cache for {len(cleared_domains)} domain(s)"
+    }
+
+
 def _clean_domain(domain: str) -> str:
     """Clean domain name - remove protocol and trailing slashes."""
     return domain.replace('https://', '').replace('http://', '').strip('/')
