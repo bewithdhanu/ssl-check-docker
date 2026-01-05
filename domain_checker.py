@@ -265,10 +265,6 @@ def get_cached_result(domain: str) -> Optional[Dict[str, Any]]:
                 main_domain_entry = cache.get(main_domain, {})
                 if 'domain_days_left' in main_domain_entry:
                     result['domain_days_left'] = main_domain_entry['domain_days_left']
-                # Get domain check details from main domain cache
-                if 'domain_check_details' in main_domain_entry:
-                    result['domain_check_details'] = main_domain_entry['domain_check_details'].copy()
-                    result['domain_check_details']['checked_domain'] = domain
         
         return result
     
@@ -639,18 +635,6 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
         # Extract additional information from WHOIS output
         lines = whois_output.split('\n')
         
-        # Extract registrar only (essential info)
-        for line in lines:
-            line_lower = line.lower().strip()
-            # Skip comment lines
-            if line_lower.startswith('#') or line_lower.startswith('%'):
-                continue
-            
-            # Extract registrar
-            if 'registrar:' in line_lower and not details["registrar"]:
-                details["registrar"] = line.split(':', 1)[1].strip() if ':' in line else None
-                break  # Found registrar, no need to continue
-        
         # Search for expiry date patterns - stop at first match
         # Handle multi-line expiry dates and comments
         for pattern in EXPIRY_PATTERNS:
@@ -712,16 +696,12 @@ def check_health_and_response_time(domain: str) -> Dict[str, Any]:
         domain: Domain name to check
         
     Returns:
-        Dictionary with health_status, response_time_ms, and detailed health_check_info
+        Dictionary with health_status and response_time_ms
     """
     clean_domain = _clean_domain(domain)
     result = {
         "health_status": "UNKNOWN",
-        "response_time_ms": None,
-        "health_check_details": {
-            "status_code": None,
-            "error": None
-        }
+        "response_time_ms": None
     }
     
     # Create SSL context that doesn't verify certificates for health checks
@@ -744,7 +724,6 @@ def check_health_and_response_time(domain: str) -> Dict[str, Any]:
                     status_code = response.getcode()
                     result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
                     result["response_time_ms"] = round(elapsed_time, 2)
-                    result["health_check_details"]["status_code"] = status_code
                     return result
             else:
                 # HTTP - no SSL needed
@@ -753,32 +732,24 @@ def check_health_and_response_time(domain: str) -> Dict[str, Any]:
                     status_code = response.getcode()
                     result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
                     result["response_time_ms"] = round(elapsed_time, 2)
-                    result["health_check_details"]["status_code"] = status_code
                     return result
         except urllib.error.HTTPError as e:
             elapsed_time = (time.time() - start_time) * 1000
             status_code = e.code
             result["health_status"] = "UP" if 200 <= status_code < 500 else "DOWN"
             result["response_time_ms"] = round(elapsed_time, 2)
-            result["health_check_details"]["status_code"] = status_code
-            result["health_check_details"]["error"] = f"HTTP {status_code}: {e.reason}"
             return result
         except (urllib.error.URLError, socket.timeout, ssl.SSLError, Exception):
             # Continue to next protocol or return DOWN if both fail
             continue
     
     result["health_status"] = "DOWN"
-    result["health_check_details"]["error"] = "All connection attempts failed"
     return result
 
 
 def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
     """Perform actual SSL check (internal function)."""
-    result = {
-        "ssl_check_details": {
-            "error": None
-        }
-    }
+    result = {}
     
     # Check SSL certificate
     try:
@@ -797,16 +768,12 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
                 
     except socket.gaierror as e:
         result["ssl_error"] = f"DNS resolution failed: {str(e)}"
-        result["ssl_check_details"]["error"] = f"DNS resolution failed: {str(e)}"
     except socket.timeout:
         result["ssl_error"] = "Connection timeout"
-        result["ssl_check_details"]["error"] = "Connection timeout"
     except ssl.SSLError as e:
         result["ssl_error"] = f"SSL error: {str(e)}"
-        result["ssl_check_details"]["error"] = f"SSL error: {str(e)}"
     except Exception as e:
         result["ssl_error"] = f"Unexpected SSL error: {str(e)}"
-        result["ssl_check_details"]["error"] = f"Unexpected error: {str(e)}"
     
     # Check health and response time
     health_info = check_health_and_response_time(clean_domain)
@@ -814,10 +781,6 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
     
     # Check domain expiry using main domain
     main_domain = _get_main_domain(clean_domain)
-    result["domain_check_details"] = {
-        "main_domain": main_domain,
-        "whois_info": {}
-    }
     
     # First check cache for main domain
     cached_domain_expiry = get_cached_domain_expiry(main_domain)
@@ -827,16 +790,9 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
         main_domain_entry = cache.get(main_domain, {})
         if 'domain_days_left' in main_domain_entry:
             result["domain_days_left"] = main_domain_entry['domain_days_left']
-        
-        # Get cached WHOIS details if available
-        if 'domain_check_details' in main_domain_entry:
-            result["domain_check_details"]["whois_info"] = main_domain_entry['domain_check_details'].get('whois_info', {})
-            result["domain_check_details"]["whois_info"]["cached"] = True
     else:
         # Perform whois check on main domain
         domain_expiry, whois_details = check_domain_expiry(main_domain)
-        result["domain_check_details"]["whois_info"] = whois_details
-        result["domain_check_details"]["whois_info"]["cached"] = False
         
         # Only cache if we successfully got domain expiry and no error occurred
         if domain_expiry and not whois_details.get('error'):
@@ -852,7 +808,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
                 pass
         elif whois_details.get('error'):
             # Don't cache failed WHOIS lookups - they will be retried next time
-            pass
+            result["domain_error"] = whois_details.get('error')
     
     return result
 
@@ -866,36 +822,24 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None) -> 
         original_input: Original user input (as provided) - optional
         
     Returns:
-        Dictionary with domain, expiry_date, days_left, status, and detailed information
+        Dictionary with domain, expiry_date, days_left, status, and request timestamp
     """
     clean_domain = _clean_domain(domain)
+    now = datetime.now(timezone.utc)
     result = {
         "domain": clean_domain,
-        "input": original_input if original_input else domain  # Store original input as-is
+        "input": original_input if original_input else domain,  # Store original input as-is
+        "request_sent_datetime": now.strftime('%Y-%m-%d %H:%M:%S')  # Request timestamp
     }
-    now = datetime.now(timezone.utc)
     
     # Check cache first
     cached_result = get_cached_result(clean_domain)
     if cached_result:
         # Use cached result
         result.update(cached_result)
-        # Ensure input is preserved
+        # Ensure input and timestamp are preserved
         result["input"] = original_input if original_input else domain
-        # Mark as cached
-        if "ssl_check_details" not in result:
-            result["ssl_check_details"] = {"cached": True}
-        else:
-            result["ssl_check_details"]["cached"] = True
-        if "health_check_details" not in result:
-            result["health_check_details"] = {"cached": True}
-        else:
-            result["health_check_details"]["cached"] = True
-        if "domain_check_details" not in result:
-            result["domain_check_details"] = {"cached": True}
-        else:
-            if "whois_info" in result["domain_check_details"]:
-                result["domain_check_details"]["whois_info"]["cached"] = True
+        result["request_sent_datetime"] = now.strftime('%Y-%m-%d %H:%M:%S')
         return result
     
     # Cache miss or needs refresh - perform actual checks
