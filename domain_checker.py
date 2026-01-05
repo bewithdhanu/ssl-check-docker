@@ -504,20 +504,10 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
             'ai': 'whois.nic.ai',
             'tv': 'whois.tv',
             'me': 'whois.nic.me',
-            'app': 'whois.nic.app',  # .app domains
-            'dev': 'whois.nic.google',  # .dev domains (Google)
             'co.uk': 'whois.nominet.uk',  # Multi-part TLD
             'com.au': 'whois.aunic.net',  # Multi-part TLD
             'co.nz': 'whois.dnc.org.nz',  # Multi-part TLD
             'co.za': 'whois.registry.net.za',  # Multi-part TLD
-        }
-        
-        # TLDs that don't support standard WHOIS (require web-based lookup)
-        # Based on reference implementation: https://github.com/ak545/dns-domain-expiration-checker
-        unsupported_tlds = {
-            '.gov',
-            '.eu',
-            '.au',  # Some .au domains require web-based lookup
         }
         
         # Extract TLD for fallback lookup (handle multi-part TLDs)
@@ -609,35 +599,18 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
         elif tld and tld in tld_whois_servers:
             # Fallback: if default whois failed and we know the TLD-specific server, try it
             fallback_server = tld_whois_servers[tld]
-            try:
-                fallback_result = subprocess.run(
-                    ['whois', '-h', fallback_server, clean_domain],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                
-                # Check stderr for DNS resolution errors
-                if fallback_result.stderr:
-                    stderr_lower = fallback_result.stderr.lower()
-                    if 'name or service not known' in stderr_lower or 'getaddrinfo' in stderr_lower:
-                        # WHOIS server doesn't exist or isn't accessible (like .app TLD)
-                        details["error"] = f"WHOIS server for {tld} TLD is not accessible"
-                        return None, details
-                
-                if fallback_result.stdout:
-                    whois_output = fallback_result.stdout
-                    details["whois_server"] = fallback_server
-                    whois_lower = whois_output.lower()  # Update for next checks
-                    lines = whois_output.split('\n')  # Define lines for fallback case
-            except Exception as e:
-                # If fallback server also fails, check if it's a DNS error
-                error_str = str(e).lower()
-                if 'name or service not known' in error_str or 'getaddrinfo' in error_str:
-                    details["error"] = f"WHOIS server for {tld} TLD is not accessible"
-                else:
-                    details["error"] = f"WHOIS lookup failed for {tld} TLD"
-                return None, details
+            fallback_result = subprocess.run(
+                ['whois', '-h', fallback_server, clean_domain],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if fallback_result.stdout:
+                whois_output = fallback_result.stdout
+                details["whois_server"] = fallback_server
+                whois_lower = whois_output.lower()  # Update for next checks
+                lines = whois_output.split('\n')  # Define lines for fallback case
         
         # Check stderr for errors (some WHOIS servers return errors in stderr)
         if result.stderr and not whois_output:
@@ -654,34 +627,13 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
                 return None, details
         
         if not whois_output:
-            # Check if this is a known unsupported TLD
-            domain_lower = clean_domain.lower()
-            is_unsupported = any(domain_lower.endswith(utld) for utld in unsupported_tlds)
-            
-            if is_unsupported:
-                details["error"] = f"WHOIS lookup not supported for {tld} TLD - requires web-based lookup"
-            else:
-                # Try one more time with TLD-specific server if available
-                if tld and tld in tld_whois_servers:
-                    try:
-                        final_attempt = subprocess.run(
-                            ['whois', '-h', tld_whois_servers[tld], clean_domain],
-                            capture_output=True,
-                            text=True,
-                            timeout=10
-                        )
-                        if final_attempt.stdout and final_attempt.stdout.strip():
-                            whois_output = final_attempt.stdout
-                            details["whois_server"] = tld_whois_servers[tld]
-                        else:
-                            details["error"] = f"WHOIS data not available for {tld} TLD"
-                            return None, details
-                    except Exception:
-                        details["error"] = f"WHOIS lookup failed for {tld} TLD"
-                        return None, details
-                else:
-                    details["error"] = f"WHOIS data not available for {tld} TLD"
-                    return None, details
+            # Try RDAP as fallback when WHOIS fails
+            rdap_expiry = _try_rdap_lookup(clean_domain)
+            if rdap_expiry:
+                return rdap_expiry, details
+            # This is not necessarily an error - some TLDs don't provide WHOIS
+            details["error"] = "No WHOIS output received - domain may not support WHOIS lookup"
+            return None, details
         
         whois_lower = whois_output.lower()
         
