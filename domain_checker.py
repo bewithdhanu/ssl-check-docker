@@ -333,6 +333,8 @@ def check_domain_expiry(domain: str) -> Optional[str]:
 def check_health_and_response_time(domain: str) -> Dict[str, Any]:
     """
     Check HTTP/HTTPS health status and measure response time.
+    SSL certificate verification is disabled for health checks to handle
+    domains with self-signed or invalid certificates.
     
     Args:
         domain: Domain name to check
@@ -346,24 +348,42 @@ def check_health_and_response_time(domain: str) -> Dict[str, Any]:
         "response_time_ms": None
     }
     
+    # Create SSL context that doesn't verify certificates for health checks
+    ssl_context = ssl._create_unverified_context()
+    
     # Try HTTPS first, then HTTP
     for protocol in ['https', 'http']:
         url = f"{protocol}://{clean_domain}"
         start_time = time.time()
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'SSL-Checker/1.0'})
-            with urllib.request.urlopen(req, timeout=8) as response:  # Reduced timeout
-                elapsed_time = (time.time() - start_time) * 1000
-                status_code = response.getcode()
-                result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
-                result["response_time_ms"] = round(elapsed_time, 2)
-                return result
+            
+            # Use SSL context for HTTPS, normal for HTTP
+            if protocol == 'https':
+                # Create opener with unverified SSL context
+                https_handler = urllib.request.HTTPSHandler(context=ssl_context)
+                opener = urllib.request.build_opener(https_handler)
+                with opener.open(req, timeout=8) as response:
+                    elapsed_time = (time.time() - start_time) * 1000
+                    status_code = response.getcode()
+                    result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
+                    result["response_time_ms"] = round(elapsed_time, 2)
+                    return result
+            else:
+                # HTTP - no SSL needed
+                with urllib.request.urlopen(req, timeout=8) as response:
+                    elapsed_time = (time.time() - start_time) * 1000
+                    status_code = response.getcode()
+                    result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
+                    result["response_time_ms"] = round(elapsed_time, 2)
+                    return result
         except urllib.error.HTTPError as e:
             elapsed_time = (time.time() - start_time) * 1000
             result["health_status"] = "UP" if 200 <= e.code < 500 else "DOWN"
             result["response_time_ms"] = round(elapsed_time, 2)
             return result
-        except (urllib.error.URLError, socket.timeout, Exception):
+        except (urllib.error.URLError, socket.timeout, ssl.SSLError, Exception):
+            # Continue to next protocol or return DOWN if both fail
             continue
     
     result["health_status"] = "DOWN"
