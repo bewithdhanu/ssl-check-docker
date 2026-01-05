@@ -57,8 +57,9 @@ TIMEZONE_SUFFIXES = ['(utc)', '(gmt)', 'utc', 'gmt', '+00:00', '-00:00']
 CACHE_BASE_DIR = os.getenv('CACHE_DIR', '/tmp/ssl-checker-cache')
 CACHE_DIR = Path(CACHE_BASE_DIR)
 CACHE_FILE = CACHE_DIR / 'cache.json'
-CACHE_EXPIRY_THRESHOLD_DAYS = 2  # Refresh if SSL expires in less than 2 days
-CACHE_REFRESH_INTERVAL_HOURS = 1  # Refresh once per hour for expiring certificates
+CACHE_EXPIRY_THRESHOLD_DAYS = 2  # Threshold for different refresh intervals
+CACHE_REFRESH_INTERVAL_EXPIRING_HOURS = 1  # Refresh once per hour if expires in <= 2 days
+CACHE_REFRESH_INTERVAL_STABLE_HOURS = 24  # Refresh once per day if expires in > 2 days
 
 
 def load_cache() -> Dict[str, Dict[str, Any]]:
@@ -84,15 +85,16 @@ def save_cache(cache: Dict[str, Dict[str, Any]]) -> None:
 
 def should_refresh_cache(cached_entry: Dict[str, Any]) -> bool:
     """
-    Determine if cache entry should be refreshed.
+    Determine if cache entry should be refreshed using smart caching.
     
     Returns True if:
-    - SSL expires in less than 2 days AND last check was >= 1 hour ago
     - Cache entry is invalid/missing required fields
+    - Expires in > 2 days AND last check was >= 24 hours ago (refresh once per day)
+    - Expires in <= 2 days AND last check was >= 1 hour ago (refresh once per hour)
     
     Returns False if:
-    - SSL expires in >= 2 days (use cache)
-    - SSL expires in < 2 days BUT last check was < 1 hour ago (use cache)
+    - Expires in > 2 days AND last check was < 24 hours ago (use cache)
+    - Expires in <= 2 days AND last check was < 1 hour ago (use cache)
     """
     if not cached_entry:
         return True
@@ -114,12 +116,12 @@ def should_refresh_cache(cached_entry: Dict[str, Any]) -> bool:
         
         hours_since_check = (datetime.now(timezone.utc) - last_checked).total_seconds() / 3600
         
-        # If SSL expires in less than 2 days, refresh if last check was >= 1 hour ago
-        if ssl_days_left < CACHE_EXPIRY_THRESHOLD_DAYS:
-            return hours_since_check >= CACHE_REFRESH_INTERVAL_HOURS
+        # If expires in <= 2 days, refresh if last check was >= 1 hour ago
+        if ssl_days_left <= CACHE_EXPIRY_THRESHOLD_DAYS:
+            return hours_since_check >= CACHE_REFRESH_INTERVAL_EXPIRING_HOURS
         
-        # If SSL expires in >= 2 days, use cache (don't refresh)
-        return False
+        # If expires in > 2 days, refresh if last check was >= 24 hours ago
+        return hours_since_check >= CACHE_REFRESH_INTERVAL_STABLE_HOURS
     except (ValueError, TypeError):
         return True
 
@@ -129,8 +131,8 @@ def get_cached_domain_expiry(main_domain: str) -> Optional[str]:
     Get cached domain expiry for main domain using smart caching.
     
     Smart caching logic:
-    - If domain expires in >= 2 days: Use cache (don't refresh)
-    - If domain expires in < 2 days: Refresh if last check was >= 1 hour ago
+    - If domain expires in > 2 days: Refresh if last check was >= 24 hours ago (once per day)
+    - If domain expires in <= 2 days: Refresh if last check was >= 1 hour ago (once per hour)
     """
     cache = load_cache()
     cached_entry = cache.get(main_domain)
@@ -165,16 +167,19 @@ def get_cached_domain_expiry(main_domain: str) -> Optional[str]:
                 # If we can't calculate, use cache anyway (backward compatibility)
                 return cached_entry.get('domain_expiry_date')
         
-        # Smart caching: similar to SSL caching
-        # If domain expires in less than 2 days, refresh if last check was >= 1 hour ago
-        if domain_days_left is not None and domain_days_left < CACHE_EXPIRY_THRESHOLD_DAYS:
-            if hours_since_check >= CACHE_REFRESH_INTERVAL_HOURS:
+        # Smart caching: same logic as SSL caching
+        # If domain expires in <= 2 days, refresh if last check was >= 1 hour ago
+        if domain_days_left is not None and domain_days_left <= CACHE_EXPIRY_THRESHOLD_DAYS:
+            if hours_since_check >= CACHE_REFRESH_INTERVAL_EXPIRING_HOURS:
                 return None  # Need to refresh
             else:
                 return cached_entry.get('domain_expiry_date')  # Use cache
         
-        # If domain expires in >= 2 days, use cache (don't refresh)
-        return cached_entry.get('domain_expiry_date')
+        # If domain expires in > 2 days, refresh if last check was >= 24 hours ago
+        if hours_since_check >= CACHE_REFRESH_INTERVAL_STABLE_HOURS:
+            return None  # Need to refresh
+        
+        return cached_entry.get('domain_expiry_date')  # Use cache
         
     except (ValueError, TypeError):
         # If parsing fails, return cached value (backward compatibility)

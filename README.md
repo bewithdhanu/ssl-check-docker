@@ -10,11 +10,11 @@ A Docker image that checks SSL certificate expiry dates, domain expiry, health s
 - **Response Time**: Measure HTTP/HTTPS response time in milliseconds
 - **Smart Caching**: Reduces API calls by caching results for both SSL and domain expiry
   - **SSL Certificate Caching**: 
-    - Uses cache if SSL certificate expires in >= 2 days
-    - Refreshes cache only when SSL expires in < 2 days AND last check was >= 1 hour ago
+    - If expires in **> 2 days**: Refreshes cache once per day (24 hours)
+    - If expires in **<= 2 days**: Refreshes cache once per hour (1 hour)
   - **Domain Expiry Caching**:
-    - Uses cache if domain expires in >= 2 days
-    - Refreshes cache only when domain expires in < 2 days AND last check was >= 1 hour ago
+    - If expires in **> 2 days**: Refreshes cache once per day (24 hours)
+    - If expires in **<= 2 days**: Refreshes cache once per hour (1 hour)
   - Significantly improves performance for repeated checks
   - Domain expiry cache is shared across all subdomains (e.g., `pro.example.com` uses cached expiry from `example.com`)
 - Returns expiry dates in YYYY-MM-DD HH:MM:SS format (UTC)
@@ -220,27 +220,31 @@ The script implements intelligent caching to reduce API calls and improve perfor
 
 1. **First Check**: Always performs real SSL certificate check
 2. **Subsequent Checks**:
-   - If SSL certificate expires in **>= 2 days**: Uses cached result (no SSL checks)
-   - If SSL certificate expires in **< 2 days**: 
+   - If SSL certificate expires in **> 2 days**: 
+     - Uses cache if last check was **< 24 hours ago**
+     - Refreshes cache if last check was **>= 24 hours ago** (once per day)
+   - If SSL certificate expires in **<= 2 days**: 
      - Uses cache if last check was **< 1 hour ago**
-     - Refreshes cache if last check was **>= 1 hour ago**
+     - Refreshes cache if last check was **>= 1 hour ago** (once per hour)
 
 ### Domain Expiry Caching
 
 1. **First Check**: Always performs real WHOIS lookup for main domain
 2. **Subsequent Checks**:
-   - If domain expires in **>= 2 days**: Uses cached result (no WHOIS calls)
-   - If domain expires in **< 2 days**: 
+   - If domain expires in **> 2 days**: 
+     - Uses cache if last check was **< 24 hours ago**
+     - Refreshes cache if last check was **>= 24 hours ago** (once per day)
+   - If domain expires in **<= 2 days**: 
      - Uses cache if last check was **< 1 hour ago**
-     - Refreshes cache if last check was **>= 1 hour ago**
+     - Refreshes cache if last check was **>= 1 hour ago** (once per hour)
 3. **Subdomain Sharing**: All subdomains share the same domain expiry cache
    - Example: Checking `pro.example.com` uses cached expiry from `example.com`
    - Reduces WHOIS queries significantly
 
 ### Benefits
 
-- **Fast responses** for stable certificates and domains
-- **Regular updates** for certificates/domains nearing expiration
+- **Fast responses** for stable certificates and domains (refreshed once per day)
+- **Regular updates** for certificates/domains nearing expiration (refreshed once per hour)
 - **Reduced load** on WHOIS servers and target domains
 - **Shared caching** across subdomains reduces redundant WHOIS lookups
 
