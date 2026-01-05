@@ -13,8 +13,18 @@ app = Flask(__name__)
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint."""
-    return jsonify({"status": "healthy", "service": "domain-checker"}), 200
+    """
+    Health check endpoint.
+    
+    Returns:
+    - 200: Service is healthy
+    - 503: Service is unhealthy (if we add health checks later)
+    """
+    return jsonify({
+        "status": "healthy",
+        "service": "domain-checker",
+        "status_code": 200
+    }), 200
 
 @app.route('/check', methods=['POST', 'GET'])
 def check_domains():
@@ -27,68 +37,144 @@ def check_domains():
     }
     
     GET /check?domains=example.com,google.com
+    
+    Returns:
+    - 200: Success
+    - 400: Bad request (no domains provided)
+    - 500: Internal server error
     """
-    domains = []
-    
-    if request.method == 'POST':
-        data = request.get_json() or {}
-        domains_input = data.get('domains', [])
+    try:
+        domains = []
         
-        # Handle both list and comma-separated string
-        if isinstance(domains_input, str):
-            domains = [d.strip() for d in domains_input.split(',') if d.strip()]
-        elif isinstance(domains_input, list):
-            domains = [str(d).strip() for d in domains_input if str(d).strip()]
-    else:
-        # GET request
-        domains_param = request.args.get('domains', '')
-        if domains_param:
-            domains = [d.strip() for d in domains_param.split(',') if d.strip()]
-    
-    if not domains:
+        if request.method == 'POST':
+            if not request.is_json:
+                return jsonify({
+                    "error": "Content-Type must be application/json",
+                    "status_code": 400
+                }), 400
+            
+            data = request.get_json() or {}
+            domains_input = data.get('domains', [])
+            
+            # Handle both list and comma-separated string
+            if isinstance(domains_input, str):
+                domains = [d.strip() for d in domains_input.split(',') if d.strip()]
+            elif isinstance(domains_input, list):
+                domains = [str(d).strip() for d in domains_input if str(d).strip()]
+        else:
+            # GET request
+            domains_param = request.args.get('domains', '')
+            if domains_param:
+                domains = [d.strip() for d in domains_param.split(',') if d.strip()]
+        
+        if not domains:
+            return jsonify({
+                "error": "No domains provided",
+                "status_code": 400,
+                "usage": {
+                    "POST": {"domains": ["example.com", "google.com"]},
+                    "GET": "/check?domains=example.com,google.com"
+                }
+            }), 400
+        
+        # Validate domain count (prevent abuse)
+        if len(domains) > 100:
+            return jsonify({
+                "error": "Too many domains. Maximum 100 domains per request.",
+                "status_code": 400
+            }), 400
+        
+        # Check domains in parallel
+        results = []
+        errors_occurred = False
+        
+        with ThreadPoolExecutor(max_workers=min(len(domains), 10)) as executor:
+            future_to_domain = {executor.submit(check_ssl_certificate, domain): domain for domain in domains}
+            for future in as_completed(future_to_domain):
+                try:
+                    result = future.result()
+                    results.append(result)
+                    # Check if result has errors
+                    if any(key.endswith('_error') for key in result.keys()):
+                        errors_occurred = True
+                except Exception as e:
+                    domain = future_to_domain[future]
+                    results.append({"domain": domain, "error": str(e)})
+                    errors_occurred = True
+        
+        # Sort results to match input order
+        domain_order = {domain: idx for idx, domain in enumerate(domains)}
+        results.sort(key=lambda x: domain_order.get(x.get("domain"), 999))
+        
+        # Return 200 even if some domains had errors (partial success)
+        # Return 500 only if all domains failed completely
+        all_failed = all(
+            'error' in result or 
+            (any(key.endswith('_error') for key in result.keys()) and 
+             'ssl_expiry_date' not in result and 'health_status' not in result)
+            for result in results
+        )
+        
+        if errors_occurred and all_failed:
+            return jsonify({
+                "error": "All domain checks failed",
+                "results": results,
+                "status_code": 500
+            }), 500
+        
+        # Return results array (maintain backward compatibility)
+        # Status code is in HTTP response, not in JSON body for success
+        return jsonify(results), 200
+        
+    except Exception as e:
         return jsonify({
-            "error": "No domains provided",
-            "usage": {
-                "POST": {"domains": ["example.com", "google.com"]},
-                "GET": "/check?domains=example.com,google.com"
-            }
-        }), 400
-    
-    # Check domains in parallel
-    results = []
-    with ThreadPoolExecutor(max_workers=min(len(domains), 10)) as executor:
-        future_to_domain = {executor.submit(check_ssl_certificate, domain): domain for domain in domains}
-        for future in as_completed(future_to_domain):
-            try:
-                result = future.result()
-                results.append(result)
-            except Exception as e:
-                domain = future_to_domain[future]
-                results.append({"domain": domain, "error": str(e)})
-    
-    # Sort results to match input order
-    domain_order = {domain: idx for idx, domain in enumerate(domains)}
-    results.sort(key=lambda x: domain_order.get(x.get("domain"), 999))
-    
-    return jsonify(results), 200
+            "error": "Internal server error",
+            "message": str(e),
+            "status_code": 500
+        }), 500
 
 @app.route('/', methods=['GET'])
 def index():
-    """API documentation endpoint."""
+    """
+    API documentation endpoint.
+    
+    Returns:
+    - 200: API documentation
+    """
     return jsonify({
         "service": "Domain Checker API",
         "version": "1.0.0",
+        "status_code": 200,
         "endpoints": {
             "GET /": "API documentation",
-            "GET /health": "Health check",
-            "POST /check": "Check domain(s) - send JSON body with 'domains' array",
-            "GET /check": "Check domain(s) - use 'domains' query parameter (comma-separated)"
+            "GET /health": "Health check (200: healthy, 503: unhealthy)",
+            "POST /check": "Check domain(s) - send JSON body with 'domains' array (200: success, 400: bad request, 500: server error)",
+            "GET /check": "Check domain(s) - use 'domains' query parameter (comma-separated) (200: success, 400: bad request, 500: server error)"
+        },
+        "status_codes": {
+            "200": "Success",
+            "400": "Bad Request - Invalid input (no domains, too many domains, invalid JSON)",
+            "500": "Internal Server Error - All domain checks failed or server error",
+            "503": "Service Unavailable - Service is unhealthy"
         },
         "examples": {
             "POST /check": {
                 "domains": ["example.com", "google.com"]
             },
             "GET /check": "/check?domains=example.com,google.com"
+        },
+        "response_format": {
+            "success_200": "Array of domain check results",
+            "error_400": {
+                "error": "Error message",
+                "status_code": 400,
+                "usage": "Usage instructions"
+            },
+            "error_500": {
+                "error": "All domain checks failed",
+                "results": "Array of failed results",
+                "status_code": 500
+            }
         }
     }), 200
 
