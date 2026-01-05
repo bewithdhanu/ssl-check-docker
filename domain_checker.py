@@ -430,6 +430,8 @@ def _parse_expiry_date(date_part: str) -> Optional[str]:
     
     # Try parsing with various formats
     # Safely get first word if available, otherwise use the whole string
+    if not date_part:
+        return None
     date_parts = date_part.split()
     date_str = date_parts[0] if date_parts else date_part
     for fmt in DATE_FORMATS:
@@ -542,11 +544,13 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
                             # Extract WHOIS server from referral
                             parts = line.split(':', 1)
                             if len(parts) > 1:
-                                potential_server = parts[1].strip().split()[0].strip()
-                                # Validate it looks like a hostname
-                                if '.' in potential_server and not potential_server.startswith('http'):
-                                    whois_server = potential_server
-                                    break
+                                server_parts = parts[1].strip().split()
+                                if server_parts:
+                                    potential_server = server_parts[0].strip()
+                                    # Validate it looks like a hostname
+                                    if '.' in potential_server and not potential_server.startswith('http'):
+                                        whois_server = potential_server
+                                        break
                     if whois_server:
                         break
             
@@ -653,10 +657,12 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
                         date_part = line[idx + len(pattern):].strip()
                         
                         # Handle cases where date might continue on next line
-                        if not date_part and len(lines) > lines.index(line) + 1:
-                            next_line = lines[lines.index(line) + 1].strip()
-                            if next_line and not next_line.startswith('#') and not next_line.startswith('%'):
-                                date_part = next_line
+                        if not date_part:
+                            line_idx = lines.index(line)
+                            if line_idx + 1 < len(lines):
+                                next_line = lines[line_idx + 1].strip()
+                                if next_line and not next_line.startswith('#') and not next_line.startswith('%'):
+                                    date_part = next_line
                         
                         parsed_date = _parse_expiry_date(date_part)
                         if parsed_date:
