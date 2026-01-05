@@ -124,15 +124,80 @@ def should_refresh_cache(cached_entry: Dict[str, Any]) -> bool:
         return True
 
 
+def get_cached_domain_expiry(main_domain: str) -> Optional[str]:
+    """Get cached domain expiry for main domain."""
+    cache = load_cache()
+    cached_entry = cache.get(main_domain)
+    
+    if cached_entry and 'domain_expiry_date' in cached_entry:
+        # For domain expiry cache, check if it's recent (domain expiry doesn't change often)
+        # Domain expiry cache is valid for 24 hours
+        last_checked_str = cached_entry.get('last_checked')
+        if last_checked_str:
+            try:
+                last_checked = datetime.fromisoformat(last_checked_str.replace('Z', '+00:00'))
+                if last_checked.tzinfo is None:
+                    last_checked = last_checked.replace(tzinfo=timezone.utc)
+                
+                hours_since_check = (datetime.now(timezone.utc) - last_checked).total_seconds() / 3600
+                # Domain expiry cache valid for 24 hours
+                if hours_since_check < 24:
+                    return cached_entry.get('domain_expiry_date')
+            except (ValueError, TypeError):
+                pass
+        else:
+            # If no timestamp, assume it's valid (backward compatibility)
+            return cached_entry.get('domain_expiry_date')
+    
+    return None
+
+
+def save_domain_expiry_to_cache(main_domain: str, domain_expiry: str, domain_days_left: int) -> None:
+    """Save domain expiry to cache using main domain as key."""
+    cache = load_cache()
+    
+    # Get or create entry for main domain
+    if main_domain not in cache:
+        cache[main_domain] = {}
+    
+    cache[main_domain]['domain_expiry_date'] = domain_expiry
+    cache[main_domain]['domain_days_left'] = domain_days_left
+    cache[main_domain]['last_checked'] = datetime.now(timezone.utc).isoformat()
+    
+    save_cache(cache)
+
+
 def get_cached_result(domain: str) -> Optional[Dict[str, Any]]:
     """Get cached result for domain if valid, otherwise None."""
     cache = load_cache()
     cached_entry = cache.get(domain)
+    main_domain = _get_main_domain(domain)
     
+    # Check if we have a valid cache entry for this specific domain
     if cached_entry and not should_refresh_cache(cached_entry):
         # Return cached result (remove cache metadata)
         result = {k: v for k, v in cached_entry.items() if k != 'last_checked'}
+        
+        # Always check for domain expiry from main domain cache if domain is a subdomain
+        # This ensures we get domain expiry even if it wasn't in the subdomain cache
+        if main_domain != domain:
+            main_domain_expiry = get_cached_domain_expiry(main_domain)
+            if main_domain_expiry:
+                result['domain_expiry_date'] = main_domain_expiry
+                # Get days left from main domain cache
+                main_domain_entry = cache.get(main_domain, {})
+                if 'domain_days_left' in main_domain_entry:
+                    result['domain_days_left'] = main_domain_entry['domain_days_left']
+        
         return result
+    
+    # Even if domain-specific cache doesn't exist, check main domain cache for domain expiry
+    if main_domain != domain:
+        main_domain_expiry = get_cached_domain_expiry(main_domain)
+        if main_domain_expiry:
+            # Return partial result with domain expiry from cache
+            # This allows us to skip whois lookup even if SSL cache doesn't exist
+            return {'domain_expiry_date': main_domain_expiry, 'domain_days_left': cache.get(main_domain, {}).get('domain_days_left')}
     
     return None
 
@@ -143,12 +208,55 @@ def save_to_cache(domain: str, result: Dict[str, Any]) -> None:
     result_with_timestamp = result.copy()
     result_with_timestamp['last_checked'] = datetime.now(timezone.utc).isoformat()
     cache[domain] = result_with_timestamp
+    
+    # Also save domain expiry to main domain cache if present
+    if 'domain_expiry_date' in result:
+        main_domain = _get_main_domain(domain)
+        if main_domain != domain:
+            save_domain_expiry_to_cache(
+                main_domain,
+                result['domain_expiry_date'],
+                result.get('domain_days_left', 0)
+            )
+    
     save_cache(cache)
 
 
 def _clean_domain(domain: str) -> str:
     """Clean domain name - remove protocol and trailing slashes."""
     return domain.replace('https://', '').replace('http://', '').strip('/')
+
+
+def _get_main_domain(domain: str) -> str:
+    """
+    Extract main domain from subdomain.
+    Examples:
+    - pro.mytallyho.net -> mytallyho.net
+    - www.example.com -> example.com
+    - example.co.uk -> example.co.uk (handles multi-part TLDs)
+    """
+    clean_domain = _clean_domain(domain)
+    
+    # Split domain into parts
+    parts = clean_domain.split('.')
+    
+    # Common multi-part TLDs (add more if needed)
+    multi_part_tlds = ['co.uk', 'com.au', 'co.nz', 'com.br', 'co.za', 'com.mx']
+    
+    # Check if it's a multi-part TLD
+    if len(parts) >= 3:
+        last_two = '.'.join(parts[-2:])
+        if last_two in multi_part_tlds:
+            # For multi-part TLDs, we need at least 3 parts (subdomain.domain.tld)
+            if len(parts) >= 3:
+                return '.'.join(parts[-3:])
+    
+    # For standard domains, return last 2 parts (domain.tld)
+    # If only 2 parts, return as-is (already main domain)
+    if len(parts) >= 2:
+        return '.'.join(parts[-2:])
+    
+    return clean_domain
 
 
 def _parse_expiry_date(date_part: str) -> Optional[str]:
@@ -293,16 +401,31 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
     health_info = check_health_and_response_time(clean_domain)
     result.update(health_info)
     
-    # Check domain expiry
-    domain_expiry = check_domain_expiry(clean_domain)
-    if domain_expiry:
-        result["domain_expiry_date"] = domain_expiry
-        try:
-            expiry_dt = datetime.strptime(domain_expiry, '%Y-%m-%d %H:%M:%S')
-            expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
-            result["domain_days_left"] = (expiry_dt - now).days
-        except ValueError:
-            pass
+    # Check domain expiry using main domain
+    main_domain = _get_main_domain(clean_domain)
+    
+    # First check cache for main domain
+    cached_domain_expiry = get_cached_domain_expiry(main_domain)
+    if cached_domain_expiry:
+        result["domain_expiry_date"] = cached_domain_expiry
+        cache = load_cache()
+        main_domain_entry = cache.get(main_domain, {})
+        if 'domain_days_left' in main_domain_entry:
+            result["domain_days_left"] = main_domain_entry['domain_days_left']
+    else:
+        # Perform whois check on main domain
+        domain_expiry = check_domain_expiry(main_domain)
+        if domain_expiry:
+            result["domain_expiry_date"] = domain_expiry
+            try:
+                expiry_dt = datetime.strptime(domain_expiry, '%Y-%m-%d %H:%M:%S')
+                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+                domain_days_left = (expiry_dt - now).days
+                result["domain_days_left"] = domain_days_left
+                # Save to main domain cache
+                save_domain_expiry_to_cache(main_domain, domain_expiry, domain_days_left)
+            except ValueError:
+                pass
     
     return result
 
