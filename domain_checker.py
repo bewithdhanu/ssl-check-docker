@@ -776,8 +776,6 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
     """Perform actual SSL check (internal function)."""
     result = {
         "ssl_check_details": {
-            "certificate": {},
-            "connection": {},
             "error": None
         }
     }
@@ -786,9 +784,6 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
     try:
         context = ssl.create_default_context()
         with socket.create_connection((clean_domain, 443), timeout=8) as sock:
-            # Get IP address before SSL handshake
-            ip_address = sock.getpeername()[0]
-            
             with context.wrap_socket(sock, server_hostname=clean_domain) as ssock:
                 cert = ssock.getpeercert()
                 expiry_date_str = cert['notAfter']
