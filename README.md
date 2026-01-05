@@ -8,10 +8,15 @@ A Docker image that checks SSL certificate expiry dates, domain expiry, health s
 - **Domain Expiry Check**: Check domain registration expiry dates using WHOIS
 - **Health Check**: Verify if domains are reachable (UP/DOWN status)
 - **Response Time**: Measure HTTP/HTTPS response time in milliseconds
-- **Smart Caching**: Reduces API calls by caching results
-  - Uses cache if SSL certificate expires in >= 2 days
-  - Refreshes cache only when SSL expires in < 2 days AND last check was >= 1 hour ago
+- **Smart Caching**: Reduces API calls by caching results for both SSL and domain expiry
+  - **SSL Certificate Caching**: 
+    - Uses cache if SSL certificate expires in >= 2 days
+    - Refreshes cache only when SSL expires in < 2 days AND last check was >= 1 hour ago
+  - **Domain Expiry Caching**:
+    - Uses cache if domain expires in >= 2 days
+    - Refreshes cache only when domain expires in < 2 days AND last check was >= 1 hour ago
   - Significantly improves performance for repeated checks
+  - Domain expiry cache is shared across all subdomains (e.g., `pro.example.com` uses cached expiry from `example.com`)
 - Returns expiry dates in YYYY-MM-DD HH:MM:SS format (UTC)
 - Calculates days until expiration for both SSL certificates and domain registrations
 - Status indicators: `OK` (valid), `EXPIRING` (within 30 days), or `EXPIRED`
