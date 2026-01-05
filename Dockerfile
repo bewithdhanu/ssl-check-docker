@@ -9,13 +9,22 @@ RUN apt-get update && \
 # Set working directory
 WORKDIR /app
 
-# Copy the domain checker script and set permissions in one layer
+# Copy requirements and install Python dependencies
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the domain checker script and web app
 COPY domain_checker.py /app/domain_checker.py
-RUN chmod +x /app/domain_checker.py
+COPY app.py /app/app.py
+RUN chmod +x /app/app.py
 
-# Set the script as the entrypoint
-ENTRYPOINT ["python3", "/app/domain_checker.py"]
+# Expose port
+EXPOSE 5000
 
-# Default command (can be overridden)
-CMD []
+# Set environment variables
+ENV PORT=5000
+ENV HOST=0.0.0.0
+
+# Run the web service
+CMD ["python3", "/app/app.py"]
 

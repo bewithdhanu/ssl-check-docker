@@ -1,6 +1,6 @@
-# SSL Certificate Checker Docker Image
+# Domain Checker Docker Image
 
-A Docker image that checks SSL certificate expiry dates, domain expiry, health status, and response time for one or more domains and returns the results in JSON format.
+A Docker image that checks SSL certificate expiry dates, domain expiry, health status, and response time for one or more domains. Available as both a CLI tool and a REST API web service.
 
 ## Features
 
@@ -20,11 +20,40 @@ A Docker image that checks SSL certificate expiry dates, domain expiry, health s
 
 ## Quick Start
 
+### CLI Usage
+
 Pull and run the Docker image:
 
 ```bash
 docker run --rm bewithdhanu/domain-checker example.com
 ```
+
+### Web Service Usage
+
+Run as a web service:
+
+```bash
+docker run -d -p 5000:5000 --name domain-checker bewithdhanu/domain-checker
+```
+
+Then access the API:
+
+```bash
+# Health check
+curl http://localhost:5000/health
+
+# Check domain
+curl "http://localhost:5000/check?domains=example.com"
+
+# Check multiple domains (POST)
+curl -X POST http://localhost:5000/check \
+  -H "Content-Type: application/json" \
+  -d '{"domains": ["example.com", "google.com"]}'
+```
+
+### Deploy to Coolify
+
+See [COOLIFY_DEPLOYMENT.md](./COOLIFY_DEPLOYMENT.md) for detailed deployment instructions.
 
 ## Building the Docker Image
 
