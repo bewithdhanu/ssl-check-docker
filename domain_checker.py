@@ -429,7 +429,9 @@ def _parse_expiry_date(date_part: str) -> Optional[str]:
     date_part = re.sub(timezone_offset_pattern, '', date_part).strip()
     
     # Try parsing with various formats
-    date_str = date_part.split()[0] if date_part.split() else date_part
+    # Safely get first word if available, otherwise use the whole string
+    date_parts = date_part.split()
+    date_str = date_parts[0] if date_parts else date_part
     for fmt in DATE_FORMATS:
         try:
             parsed_date = datetime.strptime(date_str, fmt)
