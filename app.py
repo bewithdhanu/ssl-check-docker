@@ -18,7 +18,6 @@ def health():
     
     Returns:
     - 200: Service is healthy
-    - 503: Service is unhealthy (if we add health checks later)
     """
     return jsonify({
         "status": "healthy",
@@ -39,9 +38,9 @@ def check_domains():
     GET /check?domains=example.com,google.com
     
     Returns:
-    - 200: Success
-    - 400: Bad request (no domains provided)
-    - 500: Internal server error
+    - 200: Success (all or some domains checked successfully)
+    - 400: Bad Request (no domains provided, invalid input, too many domains)
+    - 500: Internal Server Error (unexpected server error)
     """
     try:
         domains = []
@@ -86,47 +85,26 @@ def check_domains():
         
         # Check domains in parallel
         results = []
-        errors_occurred = False
-        
         with ThreadPoolExecutor(max_workers=min(len(domains), 10)) as executor:
             future_to_domain = {executor.submit(check_ssl_certificate, domain): domain for domain in domains}
             for future in as_completed(future_to_domain):
                 try:
                     result = future.result()
                     results.append(result)
-                    # Check if result has errors
-                    if any(key.endswith('_error') for key in result.keys()):
-                        errors_occurred = True
                 except Exception as e:
                     domain = future_to_domain[future]
                     results.append({"domain": domain, "error": str(e)})
-                    errors_occurred = True
         
         # Sort results to match input order
         domain_order = {domain: idx for idx, domain in enumerate(domains)}
         results.sort(key=lambda x: domain_order.get(x.get("domain"), 999))
         
-        # Return 200 even if some domains had errors (partial success)
-        # Return 500 only if all domains failed completely
-        all_failed = all(
-            'error' in result or 
-            (any(key.endswith('_error') for key in result.keys()) and 
-             'ssl_expiry_date' not in result and 'health_status' not in result)
-            for result in results
-        )
-        
-        if errors_occurred and all_failed:
-            return jsonify({
-                "error": "All domain checks failed",
-                "results": results,
-                "status_code": 500
-            }), 500
-        
-        # Return results array (maintain backward compatibility)
-        # Status code is in HTTP response, not in JSON body for success
+        # Return 200 even if some domains had errors (partial success is still success)
+        # Individual domain errors are included in the results
         return jsonify(results), 200
         
     except Exception as e:
+        # Unexpected server error
         return jsonify({
             "error": "Internal server error",
             "message": str(e),
@@ -147,34 +125,20 @@ def index():
         "status_code": 200,
         "endpoints": {
             "GET /": "API documentation",
-            "GET /health": "Health check (200: healthy, 503: unhealthy)",
-            "POST /check": "Check domain(s) - send JSON body with 'domains' array (200: success, 400: bad request, 500: server error)",
-            "GET /check": "Check domain(s) - use 'domains' query parameter (comma-separated) (200: success, 400: bad request, 500: server error)"
+            "GET /health": "Health check (200: healthy)",
+            "POST /check": "Check domain(s) - send JSON body with 'domains' array",
+            "GET /check": "Check domain(s) - use 'domains' query parameter (comma-separated)"
         },
         "status_codes": {
             "200": "Success",
-            "400": "Bad Request - Invalid input (no domains, too many domains, invalid JSON)",
-            "500": "Internal Server Error - All domain checks failed or server error",
-            "503": "Service Unavailable - Service is unhealthy"
+            "400": "Bad Request - No domains provided, invalid input, or too many domains (>100)",
+            "500": "Internal Server Error - Unexpected server error"
         },
         "examples": {
             "POST /check": {
                 "domains": ["example.com", "google.com"]
             },
             "GET /check": "/check?domains=example.com,google.com"
-        },
-        "response_format": {
-            "success_200": "Array of domain check results",
-            "error_400": {
-                "error": "Error message",
-                "status_code": 400,
-                "usage": "Usage instructions"
-            },
-            "error_500": {
-                "error": "All domain checks failed",
-                "results": "Array of failed results",
-                "status_code": 500
-            }
         }
     }), 200
 
