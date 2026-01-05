@@ -214,19 +214,35 @@ $ docker run --rm bewithdhanu/domain-checker example.com google.com
 
 ## Caching Behavior
 
-The script implements intelligent caching to reduce API calls and improve performance:
+The script implements intelligent caching to reduce API calls and improve performance for both SSL certificates and domain expiry:
 
-1. **First Check**: Always performs real checks (SSL, health, domain expiry)
+### SSL Certificate Caching
+
+1. **First Check**: Always performs real SSL certificate check
 2. **Subsequent Checks**:
-   - If SSL certificate expires in **>= 2 days**: Uses cached result (no API calls)
+   - If SSL certificate expires in **>= 2 days**: Uses cached result (no SSL checks)
    - If SSL certificate expires in **< 2 days**: 
      - Uses cache if last check was **< 1 hour ago**
      - Refreshes cache if last check was **>= 1 hour ago**
 
-This ensures:
-- Fast responses for stable certificates
-- Regular updates for certificates nearing expiration
-- Reduced load on WHOIS servers and target domains
+### Domain Expiry Caching
+
+1. **First Check**: Always performs real WHOIS lookup for main domain
+2. **Subsequent Checks**:
+   - If domain expires in **>= 2 days**: Uses cached result (no WHOIS calls)
+   - If domain expires in **< 2 days**: 
+     - Uses cache if last check was **< 1 hour ago**
+     - Refreshes cache if last check was **>= 1 hour ago**
+3. **Subdomain Sharing**: All subdomains share the same domain expiry cache
+   - Example: Checking `pro.example.com` uses cached expiry from `example.com`
+   - Reduces WHOIS queries significantly
+
+### Benefits
+
+- **Fast responses** for stable certificates and domains
+- **Regular updates** for certificates/domains nearing expiration
+- **Reduced load** on WHOIS servers and target domains
+- **Shared caching** across subdomains reduces redundant WHOIS lookups
 
 **Note**: Cache is stored in `/tmp/ssl-checker-cache` by default. Use volume mounts to persist cache across container runs.
 
