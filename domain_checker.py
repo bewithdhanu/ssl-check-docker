@@ -609,18 +609,35 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
         elif tld and tld in tld_whois_servers:
             # Fallback: if default whois failed and we know the TLD-specific server, try it
             fallback_server = tld_whois_servers[tld]
-            fallback_result = subprocess.run(
-                ['whois', '-h', fallback_server, clean_domain],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if fallback_result.stdout:
-                whois_output = fallback_result.stdout
-                details["whois_server"] = fallback_server
-                whois_lower = whois_output.lower()  # Update for next checks
-                lines = whois_output.split('\n')  # Define lines for fallback case
+            try:
+                fallback_result = subprocess.run(
+                    ['whois', '-h', fallback_server, clean_domain],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                # Check stderr for DNS resolution errors
+                if fallback_result.stderr:
+                    stderr_lower = fallback_result.stderr.lower()
+                    if 'name or service not known' in stderr_lower or 'getaddrinfo' in stderr_lower:
+                        # WHOIS server doesn't exist or isn't accessible (like .app TLD)
+                        details["error"] = f"WHOIS server for {tld} TLD is not accessible"
+                        return None, details
+                
+                if fallback_result.stdout:
+                    whois_output = fallback_result.stdout
+                    details["whois_server"] = fallback_server
+                    whois_lower = whois_output.lower()  # Update for next checks
+                    lines = whois_output.split('\n')  # Define lines for fallback case
+            except Exception as e:
+                # If fallback server also fails, check if it's a DNS error
+                error_str = str(e).lower()
+                if 'name or service not known' in error_str or 'getaddrinfo' in error_str:
+                    details["error"] = f"WHOIS server for {tld} TLD is not accessible"
+                else:
+                    details["error"] = f"WHOIS lookup failed for {tld} TLD"
+                return None, details
         
         # Check stderr for errors (some WHOIS servers return errors in stderr)
         if result.stderr and not whois_output:
