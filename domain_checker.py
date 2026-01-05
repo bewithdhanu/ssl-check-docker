@@ -393,6 +393,11 @@ def _parse_expiry_date(date_part: str) -> Optional[str]:
     """Parse expiry date from string using multiple formats."""
     # Clean up the date string
     date_part = date_part.split('\n')[0].split('\t')[0].split('#')[0].split(';')[0].strip()
+    
+    # Handle ISO format with milliseconds (e.g., "2026-08-06T23:59:59.0Z")
+    if '.0Z' in date_part or '.Z' in date_part:
+        date_part = date_part.replace('.0Z', 'Z').replace('.Z', 'Z')
+    
     # Remove timezone suffixes (but keep Z for ISO format)
     for suffix in TIMEZONE_SUFFIXES:
         if date_part.lower().endswith(suffix.lower()):
