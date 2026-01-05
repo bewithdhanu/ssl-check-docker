@@ -504,10 +504,20 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
             'ai': 'whois.nic.ai',
             'tv': 'whois.tv',
             'me': 'whois.nic.me',
+            'app': 'whois.nic.app',  # .app domains
+            'dev': 'whois.nic.google',  # .dev domains (Google)
             'co.uk': 'whois.nominet.uk',  # Multi-part TLD
             'com.au': 'whois.aunic.net',  # Multi-part TLD
             'co.nz': 'whois.dnc.org.nz',  # Multi-part TLD
             'co.za': 'whois.registry.net.za',  # Multi-part TLD
+        }
+        
+        # TLDs that don't support standard WHOIS (require web-based lookup)
+        # Based on reference implementation: https://github.com/ak545/dns-domain-expiration-checker
+        unsupported_tlds = {
+            '.gov',
+            '.eu',
+            '.au',  # Some .au domains require web-based lookup
         }
         
         # Extract TLD for fallback lookup (handle multi-part TLDs)
@@ -627,9 +637,34 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
                 return None, details
         
         if not whois_output:
-            # This is not necessarily an error - some TLDs don't provide WHOIS
-            details["error"] = "No WHOIS output received - domain may not support WHOIS lookup"
-            return None, details
+            # Check if this is a known unsupported TLD
+            domain_lower = clean_domain.lower()
+            is_unsupported = any(domain_lower.endswith(utld) for utld in unsupported_tlds)
+            
+            if is_unsupported:
+                details["error"] = f"WHOIS lookup not supported for {tld} TLD - requires web-based lookup"
+            else:
+                # Try one more time with TLD-specific server if available
+                if tld and tld in tld_whois_servers:
+                    try:
+                        final_attempt = subprocess.run(
+                            ['whois', '-h', tld_whois_servers[tld], clean_domain],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+                        if final_attempt.stdout and final_attempt.stdout.strip():
+                            whois_output = final_attempt.stdout
+                            details["whois_server"] = tld_whois_servers[tld]
+                        else:
+                            details["error"] = f"WHOIS data not available for {tld} TLD"
+                            return None, details
+                    except Exception:
+                        details["error"] = f"WHOIS lookup failed for {tld} TLD"
+                        return None, details
+                else:
+                    details["error"] = f"WHOIS data not available for {tld} TLD"
+                    return None, details
         
         whois_lower = whois_output.lower()
         
@@ -774,7 +809,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
         result["ssl_status"] = "DNS_ERROR"
     except socket.timeout:
         # Connection timeout means site is likely down, SSL check not relevant
-        result["ssl_status"] = "SITE_DOWN"
+        result["ssl_status"] = "DOWN"
         result["ssl_error"] = "Connection timeout - site appears to be down"
     except ssl.SSLError as e:
         result["ssl_error"] = f"SSL error: {str(e)}"
