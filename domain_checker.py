@@ -770,12 +770,17 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
                 
     except socket.gaierror as e:
         result["ssl_error"] = f"DNS resolution failed: {str(e)}"
+        result["ssl_status"] = "DNS_ERROR"
     except socket.timeout:
-        result["ssl_error"] = "Connection timeout"
+        # Connection timeout means site is likely down, SSL check not relevant
+        result["ssl_status"] = "SITE_DOWN"
+        result["ssl_error"] = "Connection timeout - site appears to be down"
     except ssl.SSLError as e:
         result["ssl_error"] = f"SSL error: {str(e)}"
+        result["ssl_status"] = "SSL_ERROR"
     except Exception as e:
         result["ssl_error"] = f"Unexpected SSL error: {str(e)}"
+        result["ssl_status"] = "ERROR"
     
     # Check health and response time
     health_info = check_health_and_response_time(clean_domain)
