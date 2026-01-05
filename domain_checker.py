@@ -133,12 +133,20 @@ def get_cached_domain_expiry(main_domain: str) -> Optional[str]:
     Smart caching logic:
     - If domain expires in > 2 days: Refresh if last check was >= 24 hours ago (once per day)
     - If domain expires in <= 2 days: Refresh if last check was >= 1 hour ago (once per hour)
+    - Never return cached result if it has an error (e.g., "No WHOIS output received")
     """
     cache = load_cache()
     cached_entry = cache.get(main_domain)
     
     if not cached_entry or 'domain_expiry_date' not in cached_entry:
         return None
+    
+    # Check if cached entry has an error - don't use cache if it does
+    if 'domain_check_details' in cached_entry:
+        whois_info = cached_entry['domain_check_details'].get('whois_info', {})
+        if whois_info.get('error'):
+            # Don't return cached result if there's an error
+            return None
     
     last_checked_str = cached_entry.get('last_checked')
     if not last_checked_str:
@@ -187,19 +195,28 @@ def get_cached_domain_expiry(main_domain: str) -> Optional[str]:
 
 
 def save_domain_expiry_to_cache(main_domain: str, domain_expiry: str, domain_days_left: int, whois_details: Optional[Dict[str, Any]] = None) -> None:
-    """Save domain expiry to cache using main domain as key."""
+    """
+    Save domain expiry to cache using main domain as key.
+    
+    Note: This function should only be called when domain_expiry is valid and whois_details has no error.
+    """
     cache = load_cache()
     
     # Get or create entry for main domain
     if main_domain not in cache:
         cache[main_domain] = {}
     
+    # Only save if there's no error in whois_details
+    if whois_details and whois_details.get('error'):
+        # Don't cache entries with errors
+        return
+    
     cache[main_domain]['domain_expiry_date'] = domain_expiry
     cache[main_domain]['domain_days_left'] = domain_days_left
     cache[main_domain]['last_checked'] = datetime.now(timezone.utc).isoformat()
     
-    # Save WHOIS details if provided
-    if whois_details:
+    # Save WHOIS details if provided (and no error)
+    if whois_details and not whois_details.get('error'):
         if 'domain_check_details' not in cache[main_domain]:
             cache[main_domain]['domain_check_details'] = {}
         cache[main_domain]['domain_check_details']['whois_info'] = whois_details
@@ -702,17 +719,21 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
         result["domain_check_details"]["whois_info"] = whois_details
         result["domain_check_details"]["whois_info"]["cached"] = False
         
-        if domain_expiry:
+        # Only cache if we successfully got domain expiry and no error occurred
+        if domain_expiry and not whois_details.get('error'):
             result["domain_expiry_date"] = domain_expiry
             try:
                 expiry_dt = datetime.strptime(domain_expiry, '%Y-%m-%d %H:%M:%S')
                 expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
                 domain_days_left = (expiry_dt - now).days
                 result["domain_days_left"] = domain_days_left
-                # Save to main domain cache (including details)
+                # Save to main domain cache (including details) - only if no error
                 save_domain_expiry_to_cache(main_domain, domain_expiry, domain_days_left, whois_details)
             except ValueError:
                 pass
+        elif whois_details.get('error'):
+            # Don't cache failed WHOIS lookups - they will be retried next time
+            pass
     
     return result
 
