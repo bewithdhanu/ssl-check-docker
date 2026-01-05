@@ -1,8 +1,8 @@
 FROM python:3.11-slim
 
-# Install whois and optimize image size
+# Install whois and CA certificates (required for SSL verification)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends whois && \
+    apt-get install -y --no-install-recommends whois ca-certificates && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
