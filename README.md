@@ -18,10 +18,18 @@ A Docker image that checks SSL certificate expiry dates, domain expiry, health s
 - Handles errors gracefully
 - Supports command-line arguments or environment variables
 
+## Quick Start
+
+Pull and run the Docker image:
+
+```bash
+docker run --rm bewithdhanu/domain-checker example.com
+```
+
 ## Building the Docker Image
 
 ```bash
-docker build -t ssl-checker .
+docker build -t domain-checker .
 ```
 
 ## Usage
@@ -29,19 +37,19 @@ docker build -t ssl-checker .
 ### Single Domain
 
 ```bash
-docker run --rm ssl-checker example.com
+docker run --rm bewithdhanu/domain-checker example.com
 ```
 
 ### Multiple Domains
 
 ```bash
-docker run --rm ssl-checker example.com google.com yahoo.com
+docker run --rm bewithdhanu/domain-checker example.com google.com yahoo.com
 ```
 
 ### Using Environment Variable
 
 ```bash
-docker run --rm -e DOMAINS="example.com,google.com,yahoo.com" ssl-checker --env
+docker run --rm -e DOMAINS="example.com,google.com,yahoo.com" bewithdhanu/domain-checker --env
 ```
 
 ### Using Cache with Volume (Persistent Cache)
@@ -50,13 +58,13 @@ To persist cache across container runs, mount a volume:
 
 ```bash
 # Create a volume for cache persistence
-docker volume create ssl-checker-cache
+docker volume create domain-checker-cache
 
 # Run with persistent cache
-docker run --rm -v ssl-checker-cache:/tmp/ssl-checker-cache ssl-checker example.com
+docker run --rm -v domain-checker-cache:/tmp/ssl-checker-cache bewithdhanu/domain-checker example.com
 
 # Or use a host directory
-docker run --rm -v $(pwd)/cache:/tmp/ssl-checker-cache ssl-checker example.com
+docker run --rm -v $(pwd)/cache:/tmp/ssl-checker-cache bewithdhanu/domain-checker example.com
 ```
 
 ### Custom Cache Directory
@@ -64,7 +72,7 @@ docker run --rm -v $(pwd)/cache:/tmp/ssl-checker-cache ssl-checker example.com
 You can specify a custom cache directory using the `CACHE_DIR` environment variable:
 
 ```bash
-docker run --rm -e CACHE_DIR=/app/cache -v $(pwd)/cache:/app/cache ssl-checker example.com
+docker run --rm -e CACHE_DIR=/app/cache -v $(pwd)/cache:/app/cache bewithdhanu/domain-checker example.com
 ```
 
 ## Output Format
@@ -146,7 +154,7 @@ Note: Each check (SSL, health, domain expiry) is independent, so if one fails, o
 ## Example Output
 
 ```bash
-$ docker run --rm ssl-checker example.com google.com
+$ docker run --rm bewithdhanu/domain-checker example.com google.com
 
 [
   {
