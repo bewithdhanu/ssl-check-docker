@@ -753,12 +753,13 @@ def check_health_and_response_time(domain: str) -> Dict[str, Any]:
         domain: Domain name to check
         
     Returns:
-        Dictionary with health_status and response_time_ms
+        Dictionary with health_status, response_time_ms, and http_status_code
     """
     clean_domain = _clean_domain(domain)
     result = {
         "health_status": "UNKNOWN",
-        "response_time_ms": None
+        "response_time_ms": None,
+        "http_status_code": None
     }
     
     # Create SSL context that doesn't verify certificates for health checks
@@ -781,6 +782,7 @@ def check_health_and_response_time(domain: str) -> Dict[str, Any]:
                     status_code = response.getcode()
                     result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
                     result["response_time_ms"] = round(elapsed_time, 2)
+                    result["http_status_code"] = status_code
                     return result
             else:
                 # HTTP - no SSL needed
@@ -789,18 +791,21 @@ def check_health_and_response_time(domain: str) -> Dict[str, Any]:
                     status_code = response.getcode()
                     result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
                     result["response_time_ms"] = round(elapsed_time, 2)
+                    result["http_status_code"] = status_code
                     return result
         except urllib.error.HTTPError as e:
             elapsed_time = (time.time() - start_time) * 1000
             status_code = e.code
             result["health_status"] = "UP" if 200 <= status_code < 500 else "DOWN"
             result["response_time_ms"] = round(elapsed_time, 2)
+            result["http_status_code"] = status_code
             return result
         except (urllib.error.URLError, socket.timeout, ssl.SSLError, Exception):
             # Continue to next protocol or return DOWN if both fail
             continue
     
     result["health_status"] = "DOWN"
+    result["http_status_code"] = None
     return result
 
 
