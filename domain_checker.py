@@ -79,10 +79,10 @@ TIMEZONE_SUFFIXES = [
 CACHE_BASE_DIR = os.getenv('CACHE_DIR', '/tmp/ssl-checker-cache')
 CACHE_DIR = Path(CACHE_BASE_DIR)
 CACHE_FILE = CACHE_DIR / 'cache.json'
-CACHE_EXPIRY_THRESHOLD_DAYS = 2  # Threshold for different refresh intervals
-CACHE_REFRESH_INTERVAL_EXPIRING_HOURS = 1  # Refresh once per hour if expires in <= 2 days
-CACHE_REFRESH_INTERVAL_STABLE_HOURS = 24  # Refresh once per day if expires in > 2 days
-LOGO_CACHE_EXPIRY_HOURS = 168  # Cache logo for 1 week (7 days * 24 hours)
+# Unified cache expiry: 1 hour for all checks (SSL, domain, logo)
+CACHE_EXPIRY_HOURS = 1  # Cache all checks for 1 hour
+LOGO_CACHE_EXPIRY_HOURS = 1  # Cache logo for 1 hour (same as other checks)
+DOMAIN_CACHE_EXPIRY_HOURS = 1  # Cache domain expiry for 1 hour (same as other checks)
 
 
 def load_cache() -> Dict[str, Dict[str, Any]]:
@@ -1038,7 +1038,7 @@ def save_logo_to_cache(domain: str, logo_url: Optional[str]) -> None:
     save_cache(cache)
 
 
-def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
+def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False) -> Dict[str, Any]:
     """Perform actual SSL check (internal function)."""
     # Initialize all fields with null to ensure they're always present
     result = {
@@ -1093,7 +1093,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
     main_domain = _get_main_domain(clean_domain)
     
     # First check cache for main domain
-    cached_domain_expiry = get_cached_domain_expiry(main_domain)
+    cached_domain_expiry = get_cached_domain_expiry(main_domain, force=force)
     if cached_domain_expiry:
         result["domain_expiry_date"] = cached_domain_expiry
         cache = load_cache()
@@ -1131,8 +1131,8 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
             else:
                 result["domain_error"] = f"WHOIS lookup failed: {error_msg}"
     
-    # Check website logo (with 1-week cache)
-    cached_logo = get_cached_logo(clean_domain)
+    # Check website logo (with 1-hour cache)
+    cached_logo = get_cached_logo(clean_domain, force=force)
     if cached_logo:
         result["website_logo"] = cached_logo
     else:

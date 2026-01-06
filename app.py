@@ -32,10 +32,11 @@ def check_domains():
     
     POST /check
     Body: {
-        "domains": ["example.com", "google.com"]
+        "domains": ["example.com", "google.com"],
+        "force": true  // Optional: bypass cache if true
     }
     
-    GET /check?domains=example.com,google.com
+    GET /check?domains=example.com,google.com&force=true
     
     Returns:
     - 200: Success (all or some domains checked successfully)
@@ -44,6 +45,7 @@ def check_domains():
     """
     try:
         domains = []
+        force = False
         
         if request.method == 'POST':
             if not request.is_json:
@@ -54,6 +56,7 @@ def check_domains():
             
             data = request.get_json() or {}
             domains_input = data.get('domains', [])
+            force = data.get('force', False)
             
             # Handle both list and comma-separated string
             if isinstance(domains_input, str):
@@ -65,14 +68,17 @@ def check_domains():
             domains_param = request.args.get('domains', '')
             if domains_param:
                 domains = [d.strip() for d in domains_param.split(',') if d.strip()]
+            # Get force parameter from query string
+            force_param = request.args.get('force', '').lower()
+            force = force_param in ('true', '1', 'yes')
         
         if not domains:
             return jsonify({
                 "error": "No domains provided",
                 "status_code": 400,
                 "usage": {
-                    "POST": {"domains": ["example.com", "google.com"]},
-                    "GET": "/check?domains=example.com,google.com"
+                    "POST": {"domains": ["example.com", "google.com"], "force": True},
+                    "GET": "/check?domains=example.com,google.com&force=true"
                 }
             }), 400
         
@@ -89,7 +95,7 @@ def check_domains():
         # Check domains in parallel
         results = []
         with ThreadPoolExecutor(max_workers=min(len(domains), 10)) as executor:
-            future_to_domain = {executor.submit(check_ssl_certificate, domain, domain): domain for domain in domains}
+            future_to_domain = {executor.submit(check_ssl_certificate, domain, domain, force): domain for domain in domains}
             for future in as_completed(future_to_domain):
                 try:
                     result = future.result()
