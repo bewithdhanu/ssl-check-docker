@@ -22,14 +22,6 @@ app = FastAPI(
 )
 
 # Pydantic models for request/response
-class CheckRequest(BaseModel):
-    domains: Union[List[str], str] = Field(..., description="List of domains or URLs to check")
-    force: bool = Field(default=False, description="Bypass cache if true")
-    http_retries: int = Field(default=1, ge=0, le=10, description="Number of retries for HTTP/health checks (0-10)")
-    ssl_retries: int = Field(default=1, ge=0, le=10, description="Number of retries for SSL checks (0-10)")
-    domain_retries: int = Field(default=1, ge=0, le=10, description="Number of retries for domain expiry checks (0-10)")
-    timeout: int = Field(default=30, ge=1, le=300, description="HTTP timeout in seconds (1-300)")
-
 class ClearCacheRequest(BaseModel):
     domains: Optional[Union[List[str], str]] = Field(default=None, description="List of domains to clear cache for (empty clears all)")
 
@@ -52,11 +44,9 @@ async def health():
         "status_code": 200
     }
 
-@app.post("/check", tags=["Domain Checker"])
 @app.get("/check", tags=["Domain Checker"])
 async def check_domains(
-    request: Optional[CheckRequest] = Body(None, description="Request body for POST requests"),
-    domains: Optional[str] = Query(None, description="Comma-separated list of domains (for GET requests)"),
+    domains: str = Query(..., description="Comma-separated list of domains or URLs to check"),
     force: bool = Query(False, description="Bypass cache if true"),
     http_retries: int = Query(1, ge=0, le=10, description="Number of retries for HTTP checks"),
     ssl_retries: int = Query(1, ge=0, le=10, description="Number of retries for SSL checks"),
@@ -66,7 +56,7 @@ async def check_domains(
     """
     Check domain(s) endpoint.
     
-    Supports both POST (JSON body) and GET (query parameters) methods.
+    Uses GET method with query parameters only.
     
     Returns:
     - 200: Success (all or some domains checked successfully)
@@ -74,25 +64,8 @@ async def check_domains(
     - 500: Internal Server Error (unexpected server error)
     """
     try:
-        domains_list = []
-        
-        # Handle POST request with JSON body
-        if request:
-            domains_input = request.domains
-            force = request.force
-            http_retries = request.http_retries
-            ssl_retries = request.ssl_retries
-            domain_retries = request.domain_retries
-            timeout = request.timeout
-            
-            # Handle both list and comma-separated string
-            if isinstance(domains_input, str):
-                domains_list = [d.strip() for d in domains_input.split(',') if d.strip()]
-            elif isinstance(domains_input, list):
-                domains_list = [str(d).strip() for d in domains_input if str(d).strip()]
-        # Handle GET request with query parameters
-        elif domains:
-            domains_list = [d.strip() for d in domains.split(',') if d.strip()]
+        # Parse comma-separated domains
+        domains_list = [d.strip() for d in domains.split(',') if d.strip()]
         
         if not domains_list:
             raise HTTPException(
@@ -100,17 +73,7 @@ async def check_domains(
                 detail={
                     "error": "No domains provided",
                     "status_code": 400,
-                    "usage": {
-                        "POST": {
-                            "domains": ["example.com", "google.com"],
-                            "force": True,
-                            "http_retries": 1,
-                            "ssl_retries": 1,
-                            "domain_retries": 1,
-                            "timeout": 30
-                        },
-                        "GET": "/check?domains=example.com,google.com&force=true&http_retries=1&ssl_retries=1&domain_retries=1&timeout=30"
-                    }
+                    "usage": "/check?domains=example.com,google.com&force=true&http_retries=1&ssl_retries=1&domain_retries=1&timeout=30"
                 }
             )
         
@@ -276,7 +239,6 @@ async def api_docs():
             "GET /docs": "Swagger UI documentation",
             "GET /redoc": "ReDoc documentation",
             "GET /health": "Health check (200: healthy)",
-            "POST /check": "Check domain(s) - send JSON body with 'domains' array",
             "GET /check": "Check domain(s) - use 'domains' query parameter (comma-separated)",
             "POST /cache/clear": "Clear cache for specific domain(s) or all - send JSON body with optional 'domains' array",
             "DELETE /cache/clear": "Clear cache for specific domain(s) or all - use 'domains' query parameter (comma-separated)"
@@ -287,22 +249,8 @@ async def api_docs():
             "500": "Internal Server Error - Unexpected server error"
         },
         "examples": {
-            "POST /check": {
-                "domains": ["example.com", "google.com"],
-                "force": True,
-                "http_retries": 1,
-                "ssl_retries": 1,
-                "domain_retries": 1,
-                "timeout": 30
-            },
             "GET /check": "/check?domains=example.com,google.com&force=true&http_retries=1&ssl_retries=1&domain_retries=1&timeout=30",
-            "POST /check (full URL)": {
-                "domains": ["https://pro.example.com/path?query=value"],
-                "http_retries": 2,
-                "ssl_retries": 1,
-                "domain_retries": 1,
-                "timeout": 60
-            },
+            "GET /check (full URL)": "/check?domains=https://pro.example.com/path?query=value&http_retries=2&ssl_retries=1&domain_retries=1&timeout=60",
             "POST /cache/clear": {
                 "domains": ["example.com", "google.com"]
             },
