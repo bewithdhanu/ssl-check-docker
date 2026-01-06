@@ -845,7 +845,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
         result["ssl_status"] = "DNS_ERROR"
     except socket.timeout:
         # Connection timeout means site is likely down, SSL check not relevant
-        result["ssl_status"] = "SITE_DOWN"
+        result["ssl_status"] = "DOWN"
         result["ssl_error"] = "Connection timeout - site appears to be down"
     except ssl.SSLError as e:
         result["ssl_error"] = f"SSL error: {str(e)}"
@@ -917,20 +917,41 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None) -> 
     """
     clean_domain = _clean_domain(domain)
     now = datetime.now(timezone.utc)
+    
+    # Initialize result with all required fields
     result = {
         "domain": clean_domain,
         "input": original_input if original_input else domain,  # Store original input as-is
-        "request_sent_datetime": now.strftime('%Y-%m-%d %H:%M:%S')  # Request timestamp
+        "request_sent_datetime": now.strftime('%Y-%m-%d %H:%M:%S'),  # Request timestamp
+        # SSL fields
+        "ssl_expiry_date": None,
+        "ssl_days_left": None,
+        "ssl_status": None,
+        "ssl_error": None,
+        # Health check fields
+        "health_status": None,
+        "response_time_ms": None,
+        "http_status_code": None,
+        # Domain expiry fields
+        "domain_expiry_date": None,
+        "domain_days_left": None,
+        "domain_error": None
     }
     
     # Check cache first
     cached_result = get_cached_result(clean_domain)
     if cached_result:
-        # Use cached result
+        # Update result with cached values, but ensure all fields are present
         result.update(cached_result)
         # Ensure input and timestamp are preserved
         result["input"] = original_input if original_input else domain
         result["request_sent_datetime"] = now.strftime('%Y-%m-%d %H:%M:%S')
+        # Ensure all fields exist (fill missing ones with None)
+        for field in ["ssl_expiry_date", "ssl_days_left", "ssl_status", "ssl_error",
+                     "health_status", "response_time_ms", "http_status_code",
+                     "domain_expiry_date", "domain_days_left", "domain_error"]:
+            if field not in result:
+                result[field] = None
         return result
     
     # Cache miss or needs refresh - perform actual checks
@@ -1004,7 +1025,23 @@ def main():
                     results.append(result)
                 except Exception as e:
                     domain = future_to_domain[future]
-                    results.append({"domain": domain, "error": str(e)})
+                    # Ensure all required fields are present even in error case
+                    error_result = {
+                        "domain": domain,
+                        "input": domain,
+                        "request_sent_datetime": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                        "ssl_expiry_date": None,
+                        "ssl_days_left": None,
+                        "ssl_status": None,
+                        "ssl_error": f"Unexpected error: {str(e)}",
+                        "health_status": None,
+                        "response_time_ms": None,
+                        "http_status_code": None,
+                        "domain_expiry_date": None,
+                        "domain_days_left": None,
+                        "domain_error": None
+                    }
+                    results.append(error_result)
         # Sort results to match input order
         domain_order = {domain: idx for idx, domain in enumerate(domains)}
         results.sort(key=lambda x: domain_order.get(x.get("domain"), 999))
