@@ -16,11 +16,20 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import re
+import logging
 from html.parser import HTMLParser
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 
 # Pre-compile patterns and formats for better performance
@@ -94,11 +103,15 @@ DEFAULT_HTTP_TIMEOUT = 30  # Default HTTP timeout in seconds
 def load_cache() -> Dict[str, Dict[str, Any]]:
     """Load cache from file."""
     if not CACHE_FILE.exists():
+        logger.debug(f"Cache file does not exist: {CACHE_FILE}")
         return {}
     try:
         with open(CACHE_FILE, 'r') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
+            cache = json.load(f)
+            logger.debug(f"Loaded cache with {len(cache)} entries from {CACHE_FILE}")
+            return cache
+    except (json.JSONDecodeError, IOError) as e:
+        logger.warning(f"Failed to load cache from {CACHE_FILE}: {e}")
         return {}
 
 
@@ -108,8 +121,9 @@ def save_cache(cache: Dict[str, Dict[str, Any]]) -> None:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         with open(CACHE_FILE, 'w') as f:
             json.dump(cache, f)
-    except IOError:
-        pass  # Silently fail if cache can't be written
+        logger.debug(f"Saved cache with {len(cache)} entries to {CACHE_FILE}")
+    except IOError as e:
+        logger.warning(f"Failed to save cache to {CACHE_FILE}: {e}")
 
 
 def should_refresh_cache(cached_entry: Dict[str, Any], force: bool = False) -> bool:
@@ -239,6 +253,7 @@ def get_cached_result(domain: str, force: bool = False) -> Optional[Dict[str, An
         force: If True, bypass cache and return None
     """
     if force:
+        logger.debug(f"Cache bypassed for domain: {domain} (force=True)")
         return None
     
     cache = load_cache()
@@ -247,6 +262,7 @@ def get_cached_result(domain: str, force: bool = False) -> Optional[Dict[str, An
     
     # Check if we have a valid cache entry for this specific domain
     if cached_entry and not should_refresh_cache(cached_entry, force=force):
+        logger.info(f"Cache hit for domain: {domain}")
         # Return cached result (remove cache metadata)
         result = {k: v for k, v in cached_entry.items() if k != 'last_checked'}
         
@@ -546,15 +562,19 @@ def check_domain_expiry_with_retry(domain: str, retries: int = DEFAULT_DOMAIN_RE
     """
     # Extract domain from URL if it's a full URL
     domain_to_check = _extract_domain_from_url(domain) if ('://' in domain or '/' in domain) else domain
+    logger.debug(f"Checking domain expiry for: {domain_to_check} (retries={retries})")
     
     last_error = None
     last_details = None
     
     for attempt in range(retries + 1):
+        if attempt > 0:
+            logger.info(f"Domain expiry retry attempt {attempt + 1}/{retries + 1} for {domain_to_check}")
         expiry, details = check_domain_expiry(domain_to_check)
         
         # If successful or non-retryable error, return immediately
         if expiry:
+            logger.info(f"Domain expiry check successful for {domain_to_check}: {expiry}")
             return expiry, details
         
         # Check if error is retryable
@@ -562,6 +582,7 @@ def check_domain_expiry_with_retry(domain: str, retries: int = DEFAULT_DOMAIN_RE
         if error_msg:
             # Don't retry on rate limits or permanent errors
             if 'rate limit' in error_msg.lower() or 'permanent' in error_msg.lower() or 'not found' in error_msg.lower():
+                logger.warning(f"Non-retryable error for {domain_to_check}: {error_msg}")
                 return expiry, details
         
         last_error = error_msg
@@ -569,9 +590,11 @@ def check_domain_expiry_with_retry(domain: str, retries: int = DEFAULT_DOMAIN_RE
         
         # Wait before retry
         if attempt < retries:
+            logger.debug(f"Waiting before retry for {domain_to_check}")
             time.sleep(1)
     
     # All retries failed
+    logger.error(f"Domain expiry check failed after {retries + 1} attempts for {domain_to_check}: {last_error}")
     if last_details:
         if last_error:
             last_details["error"] = f"{last_error} (after {retries + 1} attempts)"
@@ -873,13 +896,17 @@ def check_health_and_response_time(domain: str, timeout: int = DEFAULT_HTTP_TIME
     last_error = None
     
     # Retry logic
+    logger.debug(f"Checking health for: {clean_domain} (timeout={timeout}s, retries={retries})")
     for attempt in range(retries + 1):
+        if attempt > 0:
+            logger.info(f"Health check retry attempt {attempt + 1}/{retries + 1} for {clean_domain}")
         for protocol in protocols:
             if url_to_check:
                 url = url_to_check
             else:
                 url = f"{protocol}://{clean_domain}"
             
+            logger.debug(f"Trying {protocol} for {clean_domain}")
             start_time = time.time()
             try:
                 req = urllib.request.Request(url, headers={'User-Agent': 'SSL-Checker/1.0'})
@@ -895,6 +922,7 @@ def check_health_and_response_time(domain: str, timeout: int = DEFAULT_HTTP_TIME
                         result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
                         result["response_time_ms"] = round(elapsed_time, 2)
                         result["http_status_code"] = status_code
+                        logger.info(f"Health check successful for {clean_domain}: {protocol} - status={status_code}, time={result['response_time_ms']}ms")
                         return result
                 else:
                     # HTTP - no SSL needed
@@ -914,6 +942,7 @@ def check_health_and_response_time(domain: str, timeout: int = DEFAULT_HTTP_TIME
                 return result
             except (urllib.error.URLError, socket.timeout, ssl.SSLError, Exception) as e:
                 last_error = str(e)
+                logger.debug(f"Health check failed for {clean_domain} ({protocol}): {e}")
                 # Continue to next protocol or retry
                 if attempt < retries:
                     time.sleep(0.5)  # Brief delay before retry
@@ -1189,11 +1218,15 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
     
     # Extract subdomain from URL if it's a full URL
     ssl_domain = _extract_subdomain_from_url(clean_domain) if ('://' in clean_domain or '/' in clean_domain) else clean_domain
+    logger.debug(f"Performing SSL check for: {ssl_domain} (retries={ssl_retries})")
     
     # Check SSL certificate with retry logic
     last_error = None
     for attempt in range(ssl_retries + 1):
+        if attempt > 0:
+            logger.info(f"SSL check retry attempt {attempt + 1}/{ssl_retries + 1} for {ssl_domain}")
         try:
+            logger.debug(f"Connecting to {ssl_domain}:443 for SSL check")
             context = ssl.create_default_context()
             with socket.create_connection((ssl_domain, 443), timeout=8) as sock:
                 with context.wrap_socket(sock, server_hostname=ssl_domain) as ssock:
@@ -1206,12 +1239,14 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
                     result["ssl_expiry_date"] = expiry_date.strftime('%Y-%m-%d %H:%M:%S')
                     result["ssl_days_left"] = days_left
                     result["ssl_status"] = "EXPIRED" if days_left < 0 else ("EXPIRING" if days_left <= 30 else "OK")
+                    logger.info(f"SSL check successful for {ssl_domain}: expires={result['ssl_expiry_date']}, days_left={days_left}, status={result['ssl_status']}")
                     break  # Success, exit retry loop
                     
         except socket.gaierror as e:
             last_error = f"DNS resolution failed: {str(e)}"
             result["ssl_error"] = last_error
             result["ssl_status"] = "DNS_ERROR"
+            logger.warning(f"DNS resolution failed for {ssl_domain}: {e}")
             if attempt < ssl_retries:
                 time.sleep(0.5)
                 continue
@@ -1219,6 +1254,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
             last_error = "Connection timeout - site appears to be down"
             result["ssl_status"] = "SITE_DOWN"
             result["ssl_error"] = last_error
+            logger.warning(f"Connection timeout for {ssl_domain} - site appears to be down")
             if attempt < ssl_retries:
                 time.sleep(1)
                 continue
@@ -1226,6 +1262,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
             last_error = f"SSL error: {str(e)}"
             result["ssl_error"] = last_error
             result["ssl_status"] = "SSL_ERROR"
+            logger.warning(f"SSL error for {ssl_domain}: {e}")
             if attempt < ssl_retries:
                 time.sleep(0.5)
                 continue
@@ -1233,9 +1270,13 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
             last_error = f"Unexpected SSL error: {str(e)}"
             result["ssl_error"] = last_error
             result["ssl_status"] = "ERROR"
+            logger.error(f"Unexpected SSL error for {ssl_domain}: {e}", exc_info=True)
             if attempt < ssl_retries:
                 time.sleep(0.5)
                 continue
+    
+    if last_error and result["ssl_status"] != "OK":
+        logger.error(f"SSL check failed for {ssl_domain} after {ssl_retries + 1} attempts: {last_error}")
     
     # Check health and response time (use configurable timeout and HTTP retries)
     health_info = check_health_and_response_time(clean_domain, timeout=timeout, retries=http_retries)
@@ -1350,9 +1391,12 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None, for
         "website_logo": None
     }
     
+    logger.info(f"Checking SSL certificate for: {domain_key} (force={force}, http_retries={http_retries}, ssl_retries={ssl_retries}, domain_retries={domain_retries}, timeout={timeout}s)")
+    
     # Check cache first (unless force=True)
     cached_result = get_cached_result(domain_key, force=force)
     if cached_result:
+        logger.info(f"Using cached result for {domain_key}")
         # Update result with cached values, but ensure all fields are present
         result.update(cached_result)
         # Ensure input and timestamp are preserved
@@ -1366,6 +1410,7 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None, for
                 result[field] = None
         return result
     
+    logger.info(f"Cache miss for {domain_key} - performing fresh checks")
     # Cache miss or needs refresh - perform actual checks
     check_result = _perform_ssl_check(clean_domain, now, force=force, ssl_retries=ssl_retries, http_retries=http_retries, domain_retries=domain_retries, timeout=timeout)
     result.update(check_result)
@@ -1374,6 +1419,7 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None, for
     result["input"] = original_input if original_input else domain
     
     # Save to cache (use domain_key, not full URL)
+    logger.debug(f"Saving result to cache for {domain_key}")
     save_to_cache(domain_key, result)
     
     return result

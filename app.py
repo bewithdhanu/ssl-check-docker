@@ -12,6 +12,15 @@ from domain_checker import check_ssl_certificate, clear_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import os
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Domain Checker API",
@@ -28,6 +37,7 @@ class ClearCacheRequest(BaseModel):
 @app.get("/", include_in_schema=False)
 async def root():
     """Redirect root to Swagger UI."""
+    logger.info("Root endpoint accessed - redirecting to Swagger UI")
     return RedirectResponse(url="/docs")
 
 @app.get("/health", tags=["Health"])
@@ -38,6 +48,7 @@ async def health():
     Returns:
     - 200: Service is healthy
     """
+    logger.info("Health check requested")
     return {
         "status": "healthy",
         "service": "domain-checker",
@@ -64,8 +75,11 @@ async def check_domains(
     - 500: Internal Server Error (unexpected server error)
     """
     try:
+        logger.info(f"Check request received: domains={domains}, force={force}, http_retries={http_retries}, ssl_retries={ssl_retries}, domain_retries={domain_retries}, timeout={timeout}")
+        
         # Parse comma-separated domains
         domains_list = [d.strip() for d in domains.split(',') if d.strip()]
+        logger.debug(f"Parsed {len(domains_list)} domain(s): {domains_list}")
         
         if not domains_list:
             raise HTTPException(
@@ -125,6 +139,7 @@ async def check_domains(
             )
         
         # Check domains in parallel
+        logger.info(f"Starting parallel check for {len(domains_list)} domain(s)")
         results = []
         with ThreadPoolExecutor(max_workers=min(len(domains_list), 10)) as executor:
             future_to_domain = {
@@ -132,11 +147,14 @@ async def check_domains(
                 for domain in domains_list
             }
             for future in as_completed(future_to_domain):
+                domain = future_to_domain[future]
                 try:
+                    logger.debug(f"Checking domain: {domain}")
                     result = future.result()
+                    logger.info(f"Domain {domain} checked successfully: ssl_status={result.get('ssl_status')}, health_status={result.get('health_status')}, domain_days_left={result.get('domain_days_left')}")
                     results.append(result)
                 except Exception as e:
-                    domain = future_to_domain[future]
+                    logger.error(f"Error checking domain {domain}: {str(e)}", exc_info=True)
                     # Ensure all required fields are present even in error case
                     error_result = {
                         "domain": domain,
@@ -160,6 +178,7 @@ async def check_domains(
         domain_order = {domain: idx for idx, domain in enumerate(domains_list)}
         results.sort(key=lambda x: domain_order.get(x.get("domain"), 999))
         
+        logger.info(f"Check completed: {len(results)} result(s) returned")
         # Return 200 even if some domains had errors (partial success is still success)
         # Individual domain errors are included in the results
         return results
@@ -168,6 +187,7 @@ async def check_domains(
         raise
     except Exception as e:
         # Unexpected server error
+        logger.error(f"Unexpected error in check_domains: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -193,6 +213,7 @@ async def clear_cache_endpoint(
     - 500: Internal Server Error
     """
     try:
+        logger.info(f"Cache clear request received: request={request}, domains={domains}")
         domains_list = []
         
         # Handle POST request with JSON body
@@ -206,13 +227,20 @@ async def clear_cache_endpoint(
         elif domains:
             domains_list = [d.strip() for d in domains.split(',') if d.strip()]
         
+        if domains_list:
+            logger.info(f"Clearing cache for {len(domains_list)} domain(s): {domains_list}")
+        else:
+            logger.info("Clearing all cache")
+        
         # Clear cache (if domains_list is empty, clears all)
         result = clear_cache(domains_list if domains_list else None)
         result["status_code"] = 200
         
+        logger.info(f"Cache cleared successfully: {result.get('cleared_count', 0)} entry/entries")
         return result
         
     except Exception as e:
+        logger.error(f"Error clearing cache: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -263,4 +291,5 @@ if __name__ == '__main__':
     import uvicorn
     port = int(os.getenv('PORT', 5000))
     host = os.getenv('HOST', '0.0.0.0')
-    uvicorn.run(app, host=host, port=port)
+    logger.info(f"Starting Domain Checker API server on {host}:{port}")
+    uvicorn.run(app, host=host, port=port, log_config=None)  # Use our custom logging
