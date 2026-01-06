@@ -1159,8 +1159,17 @@ def save_logo_to_cache(domain: str, logo_url: Optional[str]) -> None:
     save_cache(cache)
 
 
-def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False) -> Dict[str, Any]:
-    """Perform actual SSL check (internal function)."""
+def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, retries: int = DEFAULT_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT) -> Dict[str, Any]:
+    """
+    Perform actual SSL check (internal function) with retry logic.
+    
+    Args:
+        clean_domain: Domain name or full URL (will extract subdomain for SSL check)
+        now: Current datetime
+        force: If True, bypass cache
+        retries: Number of retries if SSL check fails (default: 1)
+        timeout: HTTP timeout in seconds (default: 30)
+    """
     # Initialize all fields with null to ensure they're always present
     result = {
         "ssl_expiry_date": None,
@@ -1176,42 +1185,65 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False) ->
         "website_logo": None
     }
     
-    # Check SSL certificate
-    try:
-        context = ssl.create_default_context()
-        with socket.create_connection((clean_domain, 443), timeout=8) as sock:
-            with context.wrap_socket(sock, server_hostname=clean_domain) as ssock:
-                cert = ssock.getpeercert()
-                expiry_date_str = cert['notAfter']
-                expiry_date = datetime.strptime(expiry_date_str, '%b %d %H:%M:%S %Y %Z')
-                expiry_date = expiry_date.replace(tzinfo=timezone.utc)
-                days_left = (expiry_date - now).days
-                
-                result["ssl_expiry_date"] = expiry_date.strftime('%Y-%m-%d %H:%M:%S')
-                result["ssl_days_left"] = days_left
-                result["ssl_status"] = "EXPIRED" if days_left < 0 else ("EXPIRING" if days_left <= 30 else "OK")
-                
-    except socket.gaierror as e:
-        result["ssl_error"] = f"DNS resolution failed: {str(e)}"
-        result["ssl_status"] = "DNS_ERROR"
-    except socket.timeout:
-        # Connection timeout means site is likely down, SSL check not relevant
-        result["ssl_status"] = "DOWN"
-        result["ssl_error"] = "Connection timeout - site appears to be down"
-    except ssl.SSLError as e:
-        result["ssl_error"] = f"SSL error: {str(e)}"
-        result["ssl_status"] = "SSL_ERROR"
-    except Exception as e:
-        result["ssl_error"] = f"Unexpected SSL error: {str(e)}"
-        result["ssl_status"] = "ERROR"
+    # Extract subdomain from URL if it's a full URL
+    ssl_domain = _extract_subdomain_from_url(clean_domain) if ('://' in clean_domain or '/' in clean_domain) else clean_domain
     
-    # Check health and response time
-    health_info = check_health_and_response_time(clean_domain)
+    # Check SSL certificate with retry logic
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            context = ssl.create_default_context()
+            with socket.create_connection((ssl_domain, 443), timeout=8) as sock:
+                with context.wrap_socket(sock, server_hostname=ssl_domain) as ssock:
+                    cert = ssock.getpeercert()
+                    expiry_date_str = cert['notAfter']
+                    expiry_date = datetime.strptime(expiry_date_str, '%b %d %H:%M:%S %Y %Z')
+                    expiry_date = expiry_date.replace(tzinfo=timezone.utc)
+                    days_left = (expiry_date - now).days
+                    
+                    result["ssl_expiry_date"] = expiry_date.strftime('%Y-%m-%d %H:%M:%S')
+                    result["ssl_days_left"] = days_left
+                    result["ssl_status"] = "EXPIRED" if days_left < 0 else ("EXPIRING" if days_left <= 30 else "OK")
+                    break  # Success, exit retry loop
+                    
+        except socket.gaierror as e:
+            last_error = f"DNS resolution failed: {str(e)}"
+            result["ssl_error"] = last_error
+            result["ssl_status"] = "DNS_ERROR"
+            if attempt < retries:
+                time.sleep(0.5)
+                continue
+        except socket.timeout:
+            last_error = "Connection timeout - site appears to be down"
+            result["ssl_status"] = "SITE_DOWN"
+            result["ssl_error"] = last_error
+            if attempt < retries:
+                time.sleep(1)
+                continue
+        except ssl.SSLError as e:
+            last_error = f"SSL error: {str(e)}"
+            result["ssl_error"] = last_error
+            result["ssl_status"] = "SSL_ERROR"
+            if attempt < retries:
+                time.sleep(0.5)
+                continue
+        except Exception as e:
+            last_error = f"Unexpected SSL error: {str(e)}"
+            result["ssl_error"] = last_error
+            result["ssl_status"] = "ERROR"
+            if attempt < retries:
+                time.sleep(0.5)
+                continue
+    
+    # Check health and response time (use configurable timeout and retries)
+    health_info = check_health_and_response_time(clean_domain, timeout=timeout, retries=retries)
     # Update result with health info (will overwrite None values)
     result.update(health_info)
     
     # Check domain expiry using main domain
-    main_domain = _get_main_domain(clean_domain)
+    # Extract domain from URL if it's a full URL
+    domain_for_expiry = _extract_domain_from_url(clean_domain) if ('://' in clean_domain or '/' in clean_domain) else clean_domain
+    main_domain = _get_main_domain(domain_for_expiry)
     
     # First check cache for main domain
     cached_domain_expiry = get_cached_domain_expiry(main_domain, force=force)
