@@ -1285,15 +1285,17 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, re
                 result["domain_error"] = f"WHOIS lookup failed: {error_msg}"
     
     # Check website logo (with 1-hour cache)
-    cached_logo = get_cached_logo(clean_domain, force=force)
+    # Use domain key (not full URL) for logo cache
+    logo_domain = domain_for_expiry if ('://' in clean_domain or '/' in clean_domain) else clean_domain
+    cached_logo = get_cached_logo(logo_domain, force=force)
     if cached_logo:
         result["website_logo"] = cached_logo
     else:
-        # Extract logo from website
+        # Extract logo from website (use original URL if it's a full URL)
         logo_url = extract_website_logo(clean_domain)
         result["website_logo"] = logo_url
         # Save to cache (even if None, to avoid repeated failed attempts)
-        save_logo_to_cache(clean_domain, logo_url)
+        save_logo_to_cache(logo_domain, logo_url)
     
     return result
 
