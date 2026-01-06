@@ -82,6 +82,7 @@ CACHE_FILE = CACHE_DIR / 'cache.json'
 CACHE_EXPIRY_THRESHOLD_DAYS = 2  # Threshold for different refresh intervals
 CACHE_REFRESH_INTERVAL_EXPIRING_HOURS = 1  # Refresh once per hour if expires in <= 2 days
 CACHE_REFRESH_INTERVAL_STABLE_HOURS = 24  # Refresh once per day if expires in > 2 days
+LOGO_CACHE_EXPIRY_HOURS = 168  # Cache logo for 1 week (7 days * 24 hours)
 
 
 def load_cache() -> Dict[str, Dict[str, Any]]:
