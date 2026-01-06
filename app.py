@@ -111,7 +111,8 @@ def check_domains():
                         "http_status_code": None,
                         "domain_expiry_date": None,
                         "domain_days_left": None,
-                        "domain_error": None
+                        "domain_error": None,
+                        "website_logo": None
                     }
                     results.append(error_result)
         

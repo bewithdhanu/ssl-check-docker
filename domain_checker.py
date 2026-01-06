@@ -14,7 +14,9 @@ import time
 import subprocess
 import urllib.request
 import urllib.error
+import urllib.parse
 import re
+from html.parser import HTMLParser
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -822,7 +824,8 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
         "http_status_code": None,
         "domain_expiry_date": None,
         "domain_days_left": None,
-        "domain_error": None
+        "domain_error": None,
+        "website_logo": None
     }
     
     # Check SSL certificate
@@ -901,6 +904,17 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
             else:
                 result["domain_error"] = f"WHOIS lookup failed: {error_msg}"
     
+    # Check website logo (with 1-week cache)
+    cached_logo = get_cached_logo(clean_domain)
+    if cached_logo:
+        result["website_logo"] = cached_logo
+    else:
+        # Extract logo from website
+        logo_url = extract_website_logo(clean_domain)
+        result["website_logo"] = logo_url
+        # Save to cache (even if None, to avoid repeated failed attempts)
+        save_logo_to_cache(clean_domain, logo_url)
+    
     return result
 
 
@@ -949,7 +963,7 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None) -> 
         # Ensure all fields exist (fill missing ones with None)
         for field in ["ssl_expiry_date", "ssl_days_left", "ssl_status", "ssl_error",
                      "health_status", "response_time_ms", "http_status_code",
-                     "domain_expiry_date", "domain_days_left", "domain_error"]:
+                     "domain_expiry_date", "domain_days_left", "domain_error", "website_logo"]:
             if field not in result:
                 result[field] = None
         return result
