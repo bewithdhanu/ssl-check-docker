@@ -92,11 +92,28 @@ def check_domains():
             future_to_domain = {executor.submit(check_ssl_certificate, domain, domain): domain for domain in domains}
             for future in as_completed(future_to_domain):
                 try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as e:
-                    domain = future_to_domain[future]
-                    results.append({"domain": domain, "input": domain, "error": str(e)})
+                        result = future.result()
+                        results.append(result)
+                    except Exception as e:
+                        domain = future_to_domain[future]
+                        # Ensure all required fields are present even in error case
+                        from datetime import datetime, timezone
+                        error_result = {
+                            "domain": domain,
+                            "input": domain,
+                            "request_sent_datetime": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                            "ssl_expiry_date": None,
+                            "ssl_days_left": None,
+                            "ssl_status": None,
+                            "ssl_error": f"Unexpected error: {str(e)}",
+                            "health_status": None,
+                            "response_time_ms": None,
+                            "http_status_code": None,
+                            "domain_expiry_date": None,
+                            "domain_days_left": None,
+                            "domain_error": None
+                        }
+                        results.append(error_result)
         
         # Sort results to match input order
         domain_order = {domain: idx for idx, domain in enumerate(domains)}

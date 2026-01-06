@@ -811,7 +811,19 @@ def check_health_and_response_time(domain: str) -> Dict[str, Any]:
 
 def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
     """Perform actual SSL check (internal function)."""
-    result = {}
+    # Initialize all fields with null to ensure they're always present
+    result = {
+        "ssl_expiry_date": None,
+        "ssl_days_left": None,
+        "ssl_status": None,
+        "ssl_error": None,
+        "health_status": None,
+        "response_time_ms": None,
+        "http_status_code": None,
+        "domain_expiry_date": None,
+        "domain_days_left": None,
+        "domain_error": None
+    }
     
     # Check SSL certificate
     try:
@@ -833,7 +845,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
         result["ssl_status"] = "DNS_ERROR"
     except socket.timeout:
         # Connection timeout means site is likely down, SSL check not relevant
-        result["ssl_status"] = "DOWN"
+        result["ssl_status"] = "SITE_DOWN"
         result["ssl_error"] = "Connection timeout - site appears to be down"
     except ssl.SSLError as e:
         result["ssl_error"] = f"SSL error: {str(e)}"
@@ -844,6 +856,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
     
     # Check health and response time
     health_info = check_health_and_response_time(clean_domain)
+    # Update result with health info (will overwrite None values)
     result.update(health_info)
     
     # Check domain expiry using main domain
