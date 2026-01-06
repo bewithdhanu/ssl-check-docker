@@ -1193,7 +1193,7 @@ def save_logo_to_cache(domain: str, logo_url: Optional[str]) -> None:
     save_cache(cache)
 
 
-def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ssl_retries: int = DEFAULT_SSL_RETRIES, http_retries: int = DEFAULT_HTTP_RETRIES, domain_retries: int = DEFAULT_DOMAIN_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT, ssl_timeout: int = DEFAULT_SSL_TIMEOUT) -> Dict[str, Any]:
+def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ssl_retries: int = DEFAULT_SSL_RETRIES, http_retries: int = DEFAULT_HTTP_RETRIES, domain_retries: int = DEFAULT_DOMAIN_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT, ssl_timeout: int = DEFAULT_SSL_TIMEOUT, whois_timeout: int = DEFAULT_WHOIS_TIMEOUT) -> Dict[str, Any]:
     """
     Perform actual SSL check (internal function) with retry logic.
     
