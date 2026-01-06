@@ -1221,114 +1221,157 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
     
     # Extract subdomain from URL if it's a full URL
     ssl_domain = _extract_subdomain_from_url(clean_domain) if ('://' in clean_domain or '/' in clean_domain) else clean_domain
-    logger.debug(f"Performing SSL check for: {ssl_domain} (retries={ssl_retries})")
+    logger.debug(f"Performing parallel checks for: {ssl_domain}")
     
-    # Check SSL certificate with retry logic
-    last_error = None
-    for attempt in range(ssl_retries + 1):
-        if attempt > 0:
-            logger.info(f"SSL check retry attempt {attempt + 1}/{ssl_retries + 1} for {ssl_domain}")
-        try:
-            logger.debug(f"Connecting to {ssl_domain}:443 for SSL check (timeout={ssl_timeout}s)")
-            context = ssl.create_default_context()
-            with socket.create_connection((ssl_domain, 443), timeout=ssl_timeout) as sock:
-                with context.wrap_socket(sock, server_hostname=ssl_domain) as ssock:
-                    cert = ssock.getpeercert()
-                    expiry_date_str = cert['notAfter']
-                    expiry_date = datetime.strptime(expiry_date_str, '%b %d %H:%M:%S %Y %Z')
-                    expiry_date = expiry_date.replace(tzinfo=timezone.utc)
-                    days_left = (expiry_date - now).days
-                    
-                    result["ssl_expiry_date"] = expiry_date.strftime('%Y-%m-%d %H:%M:%S')
-                    result["ssl_days_left"] = days_left
-                    result["ssl_status"] = "EXPIRED" if days_left < 0 else ("EXPIRING" if days_left <= 30 else "OK")
-                    logger.info(f"SSL check successful for {ssl_domain}: expires={result['ssl_expiry_date']}, days_left={days_left}, status={result['ssl_status']}")
-                    break  # Success, exit retry loop
-                    
-        except socket.gaierror as e:
-            last_error = f"DNS resolution failed: {str(e)}"
-            result["ssl_error"] = last_error
-            result["ssl_status"] = "DNS_ERROR"
-            logger.warning(f"DNS resolution failed for {ssl_domain}: {e}")
-            if attempt < ssl_retries:
-                time.sleep(0.5)
-                continue
-        except socket.timeout:
-            last_error = "Connection timeout - site appears to be down"
-            result["ssl_status"] = "SITE_DOWN"
-            result["ssl_error"] = last_error
-            logger.warning(f"Connection timeout for {ssl_domain} - site appears to be down")
-            if attempt < ssl_retries:
-                time.sleep(1)
-                continue
-        except ssl.SSLError as e:
-            last_error = f"SSL error: {str(e)}"
-            result["ssl_error"] = last_error
-            result["ssl_status"] = "SSL_ERROR"
-            logger.warning(f"SSL error for {ssl_domain}: {e}")
-            if attempt < ssl_retries:
-                time.sleep(0.5)
-                continue
-        except Exception as e:
-            last_error = f"Unexpected SSL error: {str(e)}"
-            result["ssl_error"] = last_error
-            result["ssl_status"] = "ERROR"
-            logger.error(f"Unexpected SSL error for {ssl_domain}: {e}", exc_info=True)
-            if attempt < ssl_retries:
-                time.sleep(0.5)
-                continue
-    
-    if last_error and result["ssl_status"] != "OK":
-        logger.error(f"SSL check failed for {ssl_domain} after {ssl_retries + 1} attempts: {last_error}")
-    
-    # Check health and response time (use configurable timeout and HTTP retries)
-    health_info = check_health_and_response_time(clean_domain, timeout=timeout, retries=http_retries)
-    # Update result with health info (will overwrite None values)
-    result.update(health_info)
-    
-    # Check domain expiry using main domain
-    # Extract domain from URL if it's a full URL
+    # Extract domain for expiry check
     domain_for_expiry = _extract_domain_from_url(clean_domain) if ('://' in clean_domain or '/' in clean_domain) else clean_domain
     main_domain = _get_main_domain(domain_for_expiry)
     
-    # First check cache for main domain
-    cached_domain_expiry = get_cached_domain_expiry(main_domain, force=force)
-    if cached_domain_expiry:
-        result["domain_expiry_date"] = cached_domain_expiry
-        cache = load_cache()
-        main_domain_entry = cache.get(main_domain, {})
-        if 'domain_days_left' in main_domain_entry:
-            result["domain_days_left"] = main_domain_entry['domain_days_left']
-    else:
-        # Perform whois check on main domain with retry logic
-        domain_expiry, whois_details = check_domain_expiry_with_retry(main_domain, retries=domain_retries, timeout=whois_timeout)
-        
-        # Only cache if we successfully got domain expiry and no error occurred
-        if domain_expiry and not whois_details.get('error'):
-            result["domain_expiry_date"] = domain_expiry
+    # Helper functions for parallel execution
+    def check_ssl():
+        """Check SSL certificate."""
+        ssl_result = {
+            "ssl_expiry_date": None,
+            "ssl_days_left": None,
+            "ssl_status": None,
+            "ssl_error": None
+        }
+        last_error = None
+        for attempt in range(ssl_retries + 1):
+            if attempt > 0:
+                logger.info(f"SSL check retry attempt {attempt + 1}/{ssl_retries + 1} for {ssl_domain}")
             try:
-                expiry_dt = datetime.strptime(domain_expiry, '%Y-%m-%d %H:%M:%S')
-                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
-                domain_days_left = (expiry_dt - now).days
-                result["domain_days_left"] = domain_days_left
-                # Save to main domain cache (including details) - only if no error
-                save_domain_expiry_to_cache(main_domain, domain_expiry, domain_days_left, whois_details)
-            except ValueError:
-                pass
-        elif whois_details.get('error'):
-            # Don't cache failed WHOIS lookups - they will be retried next time
-            error_msg = whois_details.get('error')
-            # Provide user-friendly error messages
-            if "No WHOIS output received" in error_msg:
-                result["domain_error"] = "WHOIS data not available for this domain"
-            elif "rate limit" in error_msg.lower():
-                result["domain_error"] = "WHOIS rate limit exceeded - please try again later"
-            elif "timeout" in error_msg.lower():
-                result["domain_error"] = "WHOIS query timeout"
-            elif "not found" in error_msg.lower():
-                result["domain_error"] = "Domain not found in WHOIS database"
-            else:
-                result["domain_error"] = f"WHOIS lookup failed: {error_msg}"
+                logger.debug(f"Connecting to {ssl_domain}:443 for SSL check (timeout={ssl_timeout}s)")
+                context = ssl.create_default_context()
+                with socket.create_connection((ssl_domain, 443), timeout=ssl_timeout) as sock:
+                    with context.wrap_socket(sock, server_hostname=ssl_domain) as ssock:
+                        cert = ssock.getpeercert()
+                        expiry_date_str = cert['notAfter']
+                        expiry_date = datetime.strptime(expiry_date_str, '%b %d %H:%M:%S %Y %Z')
+                        expiry_date = expiry_date.replace(tzinfo=timezone.utc)
+                        days_left = (expiry_date - now).days
+                        
+                        ssl_result["ssl_expiry_date"] = expiry_date.strftime('%Y-%m-%d %H:%M:%S')
+                        ssl_result["ssl_days_left"] = days_left
+                        ssl_result["ssl_status"] = "EXPIRED" if days_left < 0 else ("EXPIRING" if days_left <= 30 else "OK")
+                        logger.info(f"SSL check successful for {ssl_domain}: expires={ssl_result['ssl_expiry_date']}, days_left={days_left}, status={ssl_result['ssl_status']}")
+                        return ssl_result
+                        
+            except socket.gaierror as e:
+                last_error = f"DNS resolution failed: {str(e)}"
+                ssl_result["ssl_error"] = last_error
+                ssl_result["ssl_status"] = "DNS_ERROR"
+                logger.warning(f"DNS resolution failed for {ssl_domain}: {e}")
+                if attempt < ssl_retries:
+                    time.sleep(0.5)
+                    continue
+            except socket.timeout:
+                last_error = "Connection timeout - site appears to be down"
+                ssl_result["ssl_status"] = "SITE_DOWN"
+                ssl_result["ssl_error"] = last_error
+                logger.warning(f"Connection timeout for {ssl_domain} - site appears to be down")
+                if attempt < ssl_retries:
+                    time.sleep(1)
+                    continue
+            except ssl.SSLError as e:
+                last_error = f"SSL error: {str(e)}"
+                ssl_result["ssl_error"] = last_error
+                ssl_result["ssl_status"] = "SSL_ERROR"
+                logger.warning(f"SSL error for {ssl_domain}: {e}")
+                if attempt < ssl_retries:
+                    time.sleep(0.5)
+                    continue
+            except Exception as e:
+                last_error = f"Unexpected SSL error: {str(e)}"
+                ssl_result["ssl_error"] = last_error
+                ssl_result["ssl_status"] = "ERROR"
+                logger.error(f"Unexpected SSL error for {ssl_domain}: {e}", exc_info=True)
+                if attempt < ssl_retries:
+                    time.sleep(0.5)
+                    continue
+        
+        if last_error:
+            logger.error(f"SSL check failed for {ssl_domain} after {ssl_retries + 1} attempts: {last_error}")
+        return ssl_result
+    
+    def check_health():
+        """Check health and response time."""
+        return check_health_and_response_time(clean_domain, timeout=timeout, retries=http_retries)
+    
+    def check_domain_expiry():
+        """Check domain expiry."""
+        domain_result = {
+            "domain_expiry_date": None,
+            "domain_days_left": None,
+            "domain_error": None
+        }
+        # First check cache for main domain
+        cached_domain_expiry = get_cached_domain_expiry(main_domain, force=force)
+        if cached_domain_expiry:
+            logger.debug(f"Using cached domain expiry for {main_domain}")
+            domain_result["domain_expiry_date"] = cached_domain_expiry
+            cache = load_cache()
+            main_domain_entry = cache.get(main_domain, {})
+            if 'domain_days_left' in main_domain_entry:
+                domain_result["domain_days_left"] = main_domain_entry['domain_days_left']
+        else:
+            # Perform whois check on main domain with retry logic
+            logger.debug(f"Performing WHOIS check for {main_domain} (timeout={whois_timeout}s)")
+            domain_expiry, whois_details = check_domain_expiry_with_retry(main_domain, retries=domain_retries, timeout=whois_timeout)
+            
+            # Only cache if we successfully got domain expiry and no error occurred
+            if domain_expiry and not whois_details.get('error'):
+                domain_result["domain_expiry_date"] = domain_expiry
+                try:
+                    expiry_dt = datetime.strptime(domain_expiry, '%Y-%m-%d %H:%M:%S')
+                    expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+                    domain_days_left = (expiry_dt - now).days
+                    domain_result["domain_days_left"] = domain_days_left
+                    # Save to main domain cache (including details) - only if no error
+                    save_domain_expiry_to_cache(main_domain, domain_expiry, domain_days_left, whois_details)
+                except ValueError:
+                    pass
+            elif whois_details.get('error'):
+                # Don't cache failed WHOIS lookups - they will be retried next time
+                error_msg = whois_details.get('error')
+                # Provide user-friendly error messages
+                if "No WHOIS output received" in error_msg:
+                    domain_result["domain_error"] = "WHOIS data not available for this domain"
+                elif "rate limit" in error_msg.lower():
+                    domain_result["domain_error"] = "WHOIS rate limit exceeded - please try again later"
+                elif "timeout" in error_msg.lower():
+                    domain_result["domain_error"] = "WHOIS query timeout"
+                elif "not found" in error_msg.lower():
+                    domain_result["domain_error"] = "Domain not found in WHOIS database"
+                else:
+                    domain_result["domain_error"] = f"WHOIS lookup failed: {error_msg}"
+        return domain_result
+    
+    # Run all checks in parallel
+    logger.debug(f"Starting parallel checks: SSL, Health, Domain Expiry for {clean_domain}")
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        ssl_future = executor.submit(check_ssl)
+        health_future = executor.submit(check_health)
+        domain_future = executor.submit(check_domain_expiry)
+        
+        # Wait for all checks to complete and update result
+        try:
+            ssl_result = ssl_future.result()
+            result.update(ssl_result)
+        except Exception as e:
+            logger.error(f"Error in SSL check: {e}", exc_info=True)
+        
+        try:
+            health_info = health_future.result()
+            result.update(health_info)
+        except Exception as e:
+            logger.error(f"Error in health check: {e}", exc_info=True)
+        
+        try:
+            domain_result = domain_future.result()
+            result.update(domain_result)
+        except Exception as e:
+            logger.error(f"Error in domain expiry check: {e}", exc_info=True)
     
     # Check website logo (with 1-hour cache)
     # Use domain key (not full URL) for logo cache
