@@ -811,6 +811,232 @@ def check_health_and_response_time(domain: str) -> Dict[str, Any]:
     return result
 
 
+class LogoExtractor(HTMLParser):
+    """HTML parser to extract logo/favicon URLs from HTML content."""
+    
+    def __init__(self, base_url: str):
+        super().__init__()
+        self.base_url = base_url
+        self.logo_url = None
+        self.found_logo = False
+        
+    def handle_starttag(self, tag, attrs):
+        """Handle HTML start tags to find logo/favicon links."""
+        if self.found_logo:
+            return
+            
+        attrs_dict = dict(attrs)
+        
+        # Check for favicon links
+        if tag == 'link':
+            rel = attrs_dict.get('rel', '').lower()
+            href = attrs_dict.get('href', '')
+            
+            # Priority order: apple-touch-icon > icon > shortcut icon
+            if 'apple-touch-icon' in rel:
+                self.logo_url = self._resolve_url(href)
+                self.found_logo = True
+            elif rel in ['icon', 'shortcut icon'] and not self.logo_url:
+                self.logo_url = self._resolve_url(href)
+                # Don't set found_logo yet - might find apple-touch-icon later
+        
+        # Check for Open Graph image
+        elif tag == 'meta' and not self.found_logo:
+            property_attr = attrs_dict.get('property', '').lower()
+            content = attrs_dict.get('content', '')
+            
+            if property_attr == 'og:image' and content:
+                self.logo_url = self._resolve_url(content)
+                self.found_logo = True
+        
+        # Check for Twitter Card image
+        elif tag == 'meta' and not self.found_logo:
+            name = attrs_dict.get('name', '').lower()
+            content = attrs_dict.get('content', '')
+            
+            if name == 'twitter:image' and content:
+                self.logo_url = self._resolve_url(content)
+                self.found_logo = True
+        
+        # Check for img tags with logo-related classes/ids
+        elif tag == 'img' and not self.found_logo:
+            src = attrs_dict.get('src', '')
+            class_attr = attrs_dict.get('class', '').lower()
+            id_attr = attrs_dict.get('id', '').lower()
+            alt = attrs_dict.get('alt', '').lower()
+            
+            # Look for logo-related keywords
+            logo_keywords = ['logo', 'brand', 'icon']
+            if any(keyword in class_attr or keyword in id_attr or keyword in alt for keyword in logo_keywords):
+                if src:
+                    self.logo_url = self._resolve_url(src)
+                    self.found_logo = True
+    
+    def _resolve_url(self, url: str) -> Optional[str]:
+        """Resolve relative URLs to absolute URLs."""
+        if not url:
+            return None
+        
+        # Already absolute URL
+        if url.startswith(('http://', 'https://', '//')):
+            if url.startswith('//'):
+                return 'https:' + url
+            return url
+        
+        # Relative URL - resolve against base URL
+        try:
+            return urllib.parse.urljoin(self.base_url, url)
+        except Exception:
+            return url
+    
+    def get_logo_url(self) -> Optional[str]:
+        """Get the extracted logo URL."""
+        return self.logo_url
+
+
+def extract_website_logo(domain: str) -> Optional[str]:
+    """
+    Extract website logo URL from HTML content.
+    
+    Args:
+        domain: Domain name to check
+        
+    Returns:
+        Logo URL or None if not found
+    """
+    clean_domain = _clean_domain(domain)
+    
+    # Try HTTPS first, then HTTP
+    for protocol in ['https', 'http']:
+        url = f"{protocol}://{clean_domain}"
+        try:
+            # Create SSL context that doesn't verify certificates
+            ssl_context = ssl._create_unverified_context()
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            
+            if protocol == 'https':
+                https_handler = urllib.request.HTTPSHandler(context=ssl_context)
+                opener = urllib.request.build_opener(https_handler)
+                with opener.open(req, timeout=5) as response:
+                    if response.getcode() == 200:
+                        content_type = response.headers.get('Content-Type', '').lower()
+                        if 'text/html' in content_type:
+                            html_content = response.read().decode('utf-8', errors='ignore')
+                            parser = LogoExtractor(url)
+                            parser.feed(html_content)
+                            logo_url = parser.get_logo_url()
+                            
+                            # If no logo found in HTML, try default favicon
+                            if not logo_url:
+                                logo_url = urllib.parse.urljoin(url, '/favicon.ico')
+                            
+                            return logo_url
+            else:
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    if response.getcode() == 200:
+                        content_type = response.headers.get('Content-Type', '').lower()
+                        if 'text/html' in content_type:
+                            html_content = response.read().decode('utf-8', errors='ignore')
+                            parser = LogoExtractor(url)
+                            parser.feed(html_content)
+                            logo_url = parser.get_logo_url()
+                            
+                            # If no logo found in HTML, try default favicon
+                            if not logo_url:
+                                logo_url = urllib.parse.urljoin(url, '/favicon.ico')
+                            
+                            return logo_url
+        except Exception:
+            continue
+    
+    # If all methods fail, try default favicon
+    try:
+        for protocol in ['https', 'http']:
+            favicon_url = f"{protocol}://{clean_domain}/favicon.ico"
+            try:
+                req = urllib.request.Request(favicon_url, headers={'User-Agent': 'Mozilla/5.0'})
+                if protocol == 'https':
+                    ssl_context = ssl._create_unverified_context()
+                    https_handler = urllib.request.HTTPSHandler(context=ssl_context)
+                    opener = urllib.request.build_opener(https_handler)
+                    with opener.open(req, timeout=3) as response:
+                        if response.getcode() == 200:
+                            return favicon_url
+                else:
+                    with urllib.request.urlopen(req, timeout=3) as response:
+                        if response.getcode() == 200:
+                            return favicon_url
+            except Exception:
+                continue
+    except Exception:
+        pass
+    
+    return None
+
+
+def get_cached_logo(domain: str) -> Optional[str]:
+    """
+    Get cached logo URL for domain.
+    Logo cache expires after 1 week (168 hours).
+    
+    Args:
+        domain: Domain name to check
+        
+    Returns:
+        Cached logo URL or None if not cached or expired
+    """
+    cache = load_cache()
+    cached_entry = cache.get(domain)
+    
+    if not cached_entry or 'website_logo' not in cached_entry:
+        return None
+    
+    logo_url = cached_entry.get('website_logo')
+    if not logo_url:
+        return None
+    
+    # Check if logo cache is expired (1 week)
+    last_checked_str = cached_entry.get('logo_last_checked')
+    if not last_checked_str:
+        return logo_url  # No timestamp, assume valid (backward compatibility)
+    
+    try:
+        last_checked = datetime.fromisoformat(last_checked_str.replace('Z', '+00:00'))
+        if last_checked.tzinfo is None:
+            last_checked = last_checked.replace(tzinfo=timezone.utc)
+        
+        hours_since_check = (datetime.now(timezone.utc) - last_checked).total_seconds() / 3600
+        
+        # Logo cache expires after 1 week
+        if hours_since_check >= LOGO_CACHE_EXPIRY_HOURS:
+            return None  # Cache expired
+        
+        return logo_url
+    except (ValueError, TypeError):
+        return logo_url  # If parsing fails, return cached value
+
+
+def save_logo_to_cache(domain: str, logo_url: Optional[str]) -> None:
+    """
+    Save logo URL to cache with timestamp.
+    
+    Args:
+        domain: Domain name
+        logo_url: Logo URL to cache (can be None)
+    """
+    cache = load_cache()
+    
+    if domain not in cache:
+        cache[domain] = {}
+    
+    cache[domain]['website_logo'] = logo_url
+    cache[domain]['logo_last_checked'] = datetime.now(timezone.utc).isoformat()
+    
+    save_cache(cache)
+
+
 def _perform_ssl_check(clean_domain: str, now: datetime) -> Dict[str, Any]:
     """Perform actual SSL check (internal function)."""
     # Initialize all fields with null to ensure they're always present
