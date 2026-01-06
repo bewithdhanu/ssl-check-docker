@@ -106,27 +106,32 @@ def save_cache(cache: Dict[str, Dict[str, Any]]) -> None:
         pass  # Silently fail if cache can't be written
 
 
-def should_refresh_cache(cached_entry: Dict[str, Any]) -> bool:
+def should_refresh_cache(cached_entry: Dict[str, Any], force: bool = False) -> bool:
     """
-    Determine if cache entry should be refreshed using smart caching.
+    Determine if cache entry should be refreshed.
+    
+    Args:
+        cached_entry: Cached entry dictionary
+        force: If True, always refresh (bypass cache)
     
     Returns True if:
+    - force is True (bypass cache)
     - Cache entry is invalid/missing required fields
-    - Expires in > 2 days AND last check was >= 24 hours ago (refresh once per day)
-    - Expires in <= 2 days AND last check was >= 1 hour ago (refresh once per hour)
+    - Last check was >= 1 hour ago
     
     Returns False if:
-    - Expires in > 2 days AND last check was < 24 hours ago (use cache)
-    - Expires in <= 2 days AND last check was < 1 hour ago (use cache)
+    - Last check was < 1 hour ago (use cache)
     """
+    if force:
+        return True
+    
     if not cached_entry:
         return True
     
     # Check if required fields exist
-    if 'ssl_days_left' not in cached_entry or 'last_checked' not in cached_entry:
+    if 'last_checked' not in cached_entry:
         return True
     
-    ssl_days_left = cached_entry.get('ssl_days_left', 999)
     last_checked_str = cached_entry.get('last_checked')
     
     if not last_checked_str:
@@ -139,25 +144,26 @@ def should_refresh_cache(cached_entry: Dict[str, Any]) -> bool:
         
         hours_since_check = (datetime.now(timezone.utc) - last_checked).total_seconds() / 3600
         
-        # If expires in <= 2 days, refresh if last check was >= 1 hour ago
-        if ssl_days_left <= CACHE_EXPIRY_THRESHOLD_DAYS:
-            return hours_since_check >= CACHE_REFRESH_INTERVAL_EXPIRING_HOURS
-        
-        # If expires in > 2 days, refresh if last check was >= 24 hours ago
-        return hours_since_check >= CACHE_REFRESH_INTERVAL_STABLE_HOURS
+        # Refresh if last check was >= 1 hour ago
+        return hours_since_check >= CACHE_EXPIRY_HOURS
     except (ValueError, TypeError):
         return True
 
 
-def get_cached_domain_expiry(main_domain: str) -> Optional[str]:
+def get_cached_domain_expiry(main_domain: str, force: bool = False) -> Optional[str]:
     """
-    Get cached domain expiry for main domain using smart caching.
+    Get cached domain expiry for main domain.
     
-    Smart caching logic:
-    - If domain expires in > 2 days: Refresh if last check was >= 24 hours ago (once per day)
-    - If domain expires in <= 2 days: Refresh if last check was >= 1 hour ago (once per hour)
-    - Never return cached result if it has an error (e.g., "No WHOIS output received")
+    Args:
+        main_domain: Main domain name
+        force: If True, bypass cache and return None
+    
+    Cache expires after 1 hour.
+    Never return cached result if it has an error (e.g., "No WHOIS output received").
     """
+    if force:
+        return None
+    
     cache = load_cache()
     cached_entry = cache.get(main_domain)
     
@@ -183,31 +189,8 @@ def get_cached_domain_expiry(main_domain: str) -> Optional[str]:
         
         hours_since_check = (datetime.now(timezone.utc) - last_checked).total_seconds() / 3600
         
-        # Get domain days left from cache
-        domain_days_left = cached_entry.get('domain_days_left')
-        if domain_days_left is None:
-            # If days left not in cache, try to calculate from expiry date
-            try:
-                expiry_date_str = cached_entry.get('domain_expiry_date')
-                if expiry_date_str:
-                    expiry_dt = datetime.strptime(expiry_date_str, '%Y-%m-%d %H:%M:%S')
-                    expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
-                    now = datetime.now(timezone.utc)
-                    domain_days_left = (expiry_dt - now).days
-            except (ValueError, TypeError):
-                # If we can't calculate, use cache anyway (backward compatibility)
-                return cached_entry.get('domain_expiry_date')
-        
-        # Smart caching: same logic as SSL caching
-        # If domain expires in <= 2 days, refresh if last check was >= 1 hour ago
-        if domain_days_left is not None and domain_days_left <= CACHE_EXPIRY_THRESHOLD_DAYS:
-            if hours_since_check >= CACHE_REFRESH_INTERVAL_EXPIRING_HOURS:
-                return None  # Need to refresh
-            else:
-                return cached_entry.get('domain_expiry_date')  # Use cache
-        
-        # If domain expires in > 2 days, refresh if last check was >= 24 hours ago
-        if hours_since_check >= CACHE_REFRESH_INTERVAL_STABLE_HOURS:
+        # Cache expires after 1 hour
+        if hours_since_check >= DOMAIN_CACHE_EXPIRY_HOURS:
             return None  # Need to refresh
         
         return cached_entry.get('domain_expiry_date')  # Use cache
@@ -241,21 +224,30 @@ def save_domain_expiry_to_cache(main_domain: str, domain_expiry: str, domain_day
     save_cache(cache)
 
 
-def get_cached_result(domain: str) -> Optional[Dict[str, Any]]:
-    """Get cached result for domain if valid, otherwise None."""
+def get_cached_result(domain: str, force: bool = False) -> Optional[Dict[str, Any]]:
+    """
+    Get cached result for domain if valid, otherwise None.
+    
+    Args:
+        domain: Domain name
+        force: If True, bypass cache and return None
+    """
+    if force:
+        return None
+    
     cache = load_cache()
     cached_entry = cache.get(domain)
     main_domain = _get_main_domain(domain)
     
     # Check if we have a valid cache entry for this specific domain
-    if cached_entry and not should_refresh_cache(cached_entry):
+    if cached_entry and not should_refresh_cache(cached_entry, force=force):
         # Return cached result (remove cache metadata)
         result = {k: v for k, v in cached_entry.items() if k != 'last_checked'}
         
         # Always check for domain expiry from main domain cache if domain is a subdomain
         # This ensures we get domain expiry even if it wasn't in the subdomain cache
         if main_domain != domain:
-            main_domain_expiry = get_cached_domain_expiry(main_domain)
+            main_domain_expiry = get_cached_domain_expiry(main_domain, force=force)
             if main_domain_expiry:
                 result['domain_expiry_date'] = main_domain_expiry
                 # Get days left from main domain cache
@@ -267,7 +259,7 @@ def get_cached_result(domain: str) -> Optional[Dict[str, Any]]:
     
     # Even if domain-specific cache doesn't exist, check main domain cache for domain expiry
     if main_domain != domain:
-        main_domain_expiry = get_cached_domain_expiry(main_domain)
+        main_domain_expiry = get_cached_domain_expiry(main_domain, force=force)
         if main_domain_expiry:
             # Return partial result with domain expiry from cache
             # This allows us to skip whois lookup even if SSL cache doesn't exist
@@ -977,17 +969,22 @@ def extract_website_logo(domain: str) -> Optional[str]:
     return None
 
 
-def get_cached_logo(domain: str) -> Optional[str]:
+def get_cached_logo(domain: str, force: bool = False) -> Optional[str]:
     """
     Get cached logo URL for domain.
-    Logo cache expires after 1 week (168 hours).
     
     Args:
         domain: Domain name to check
-        
+        force: If True, bypass cache and return None
+    
+    Logo cache expires after 1 hour.
+    
     Returns:
         Cached logo URL or None if not cached or expired
     """
+    if force:
+        return None
+    
     cache = load_cache()
     cached_entry = cache.get(domain)
     
@@ -998,7 +995,7 @@ def get_cached_logo(domain: str) -> Optional[str]:
     if not logo_url:
         return None
     
-    # Check if logo cache is expired (1 week)
+    # Check if logo cache is expired (1 hour)
     last_checked_str = cached_entry.get('logo_last_checked')
     if not last_checked_str:
         return logo_url  # No timestamp, assume valid (backward compatibility)
@@ -1010,7 +1007,7 @@ def get_cached_logo(domain: str) -> Optional[str]:
         
         hours_since_check = (datetime.now(timezone.utc) - last_checked).total_seconds() / 3600
         
-        # Logo cache expires after 1 week
+        # Logo cache expires after 1 hour
         if hours_since_check >= LOGO_CACHE_EXPIRY_HOURS:
             return None  # Cache expired
         
@@ -1145,16 +1142,17 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False) ->
     return result
 
 
-def check_ssl_certificate(domain: str, original_input: Optional[str] = None) -> Dict[str, Any]:
+def check_ssl_certificate(domain: str, original_input: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
     """
     Check SSL certificate for a given domain with caching.
     
     Args:
         domain: Domain name to check
         original_input: Original user input (as provided) - optional
+        force: If True, bypass cache and force fresh check
         
     Returns:
-        Dictionary with domain, expiry_date, days_left, status, and request timestamp
+        Dictionary with all required fields always present (null if data unavailable)
     """
     clean_domain = _clean_domain(domain)
     now = datetime.now(timezone.utc)
@@ -1176,11 +1174,13 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None) -> 
         # Domain expiry fields
         "domain_expiry_date": None,
         "domain_days_left": None,
-        "domain_error": None
+        "domain_error": None,
+        # Website logo field
+        "website_logo": None
     }
     
-    # Check cache first
-    cached_result = get_cached_result(clean_domain)
+    # Check cache first (unless force=True)
+    cached_result = get_cached_result(clean_domain, force=force)
     if cached_result:
         # Update result with cached values, but ensure all fields are present
         result.update(cached_result)
@@ -1196,7 +1196,7 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None) -> 
         return result
     
     # Cache miss or needs refresh - perform actual checks
-    check_result = _perform_ssl_check(clean_domain, now)
+    check_result = _perform_ssl_check(clean_domain, now, force=force)
     result.update(check_result)
     
     # Ensure input is preserved
