@@ -1,72 +1,72 @@
 #!/usr/bin/env python3
 """
 Domain Checker Web Service
-REST API wrapper for domain checker functionality.
+REST API wrapper for domain checker functionality using FastAPI.
 """
 
-from flask import Flask, request, jsonify
-from flasgger import Swagger
+from fastapi import FastAPI, HTTPException, Query, Body
+from fastapi.responses import RedirectResponse, JSONResponse
+from pydantic import BaseModel, Field
+from typing import List, Optional, Union
 from domain_checker import check_ssl_certificate, clear_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 import os
 
-app = Flask(__name__)
+app = FastAPI(
+    title="Domain Checker API",
+    description="API for checking SSL certificates, domain expiry, health status, and website logos",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
-# Configure Swagger UI
-swagger_config = {
-    "headers": [],
-    "specs": [
-        {
-            "endpoint": "apispec",
-            "route": "/apispec.json",
-            "rule_filter": lambda rule: True,
-            "model_filter": lambda tag: True,
-        }
-    ],
-    "static_url_path": "/flasgger_static",
-    "swagger_ui": True,
-    "specs_route": "/swagger"
-}
+# Pydantic models for request/response
+class CheckRequest(BaseModel):
+    domains: Union[List[str], str] = Field(..., description="List of domains or URLs to check")
+    force: bool = Field(default=False, description="Bypass cache if true")
+    http_retries: int = Field(default=1, ge=0, le=10, description="Number of retries for HTTP/health checks (0-10)")
+    ssl_retries: int = Field(default=1, ge=0, le=10, description="Number of retries for SSL checks (0-10)")
+    domain_retries: int = Field(default=1, ge=0, le=10, description="Number of retries for domain expiry checks (0-10)")
+    timeout: int = Field(default=30, ge=1, le=300, description="HTTP timeout in seconds (1-300)")
 
-swagger_template = {
-    "swagger": "2.0",
-    "info": {
-        "title": "Domain Checker API",
-        "description": "API for checking SSL certificates, domain expiry, health status, and website logos",
-        "version": "1.0.0"
-    },
-    "basePath": "/",
-    "schemes": ["http", "https"]
-}
+class ClearCacheRequest(BaseModel):
+    domains: Optional[Union[List[str], str]] = Field(default=None, description="List of domains to clear cache for (empty clears all)")
 
-swagger = Swagger(app, config=swagger_config, template=swagger_template)
+@app.get("/", include_in_schema=False)
+async def root():
+    """Redirect root to Swagger UI."""
+    return RedirectResponse(url="/docs")
 
-@app.route('/health', methods=['GET'])
-def health():
+@app.get("/health", tags=["Health"])
+async def health():
     """
     Health check endpoint.
     
     Returns:
     - 200: Service is healthy
     """
-    return jsonify({
+    return {
         "status": "healthy",
         "service": "domain-checker",
         "status_code": 200
-    }), 200
+    }
 
-@app.route('/check', methods=['POST', 'GET'])
-def check_domains():
+@app.post("/check", tags=["Domain Checker"])
+@app.get("/check", tags=["Domain Checker"])
+async def check_domains(
+    request: Optional[CheckRequest] = Body(None, description="Request body for POST requests"),
+    domains: Optional[str] = Query(None, description="Comma-separated list of domains (for GET requests)"),
+    force: bool = Query(False, description="Bypass cache if true"),
+    http_retries: int = Query(1, ge=0, le=10, description="Number of retries for HTTP checks"),
+    ssl_retries: int = Query(1, ge=0, le=10, description="Number of retries for SSL checks"),
+    domain_retries: int = Query(1, ge=0, le=10, description="Number of retries for domain checks"),
+    timeout: int = Query(30, ge=1, le=300, description="HTTP timeout in seconds")
+):
     """
     Check domain(s) endpoint.
     
-    POST /check
-    Body: {
-        "domains": ["example.com", "google.com"],
-        "force": true  // Optional: bypass cache if true
-    }
-    
-    GET /check?domains=example.com,google.com&force=true
+    Supports both POST (JSON body) and GET (query parameters) methods.
     
     Returns:
     - 200: Success (all or some domains checked successfully)
@@ -74,120 +74,100 @@ def check_domains():
     - 500: Internal Server Error (unexpected server error)
     """
     try:
-        domains = []
-        force = False
-        http_retries = 1  # Default HTTP retries
-        ssl_retries = 1  # Default SSL retries
-        domain_retries = 1  # Default domain retries
-        timeout = 30  # Default timeout in seconds
+        domains_list = []
         
-        if request.method == 'POST':
-            if not request.is_json:
-                return jsonify({
-                    "error": "Content-Type must be application/json",
-                    "status_code": 400
-                }), 400
-            
-            data = request.get_json() or {}
-            domains_input = data.get('domains', [])
-            force = data.get('force', False)
-            http_retries = data.get('http_retries', 1)
-            ssl_retries = data.get('ssl_retries', 1)
-            domain_retries = data.get('domain_retries', 1)
-            timeout = data.get('timeout', 30)
+        # Handle POST request with JSON body
+        if request:
+            domains_input = request.domains
+            force = request.force
+            http_retries = request.http_retries
+            ssl_retries = request.ssl_retries
+            domain_retries = request.domain_retries
+            timeout = request.timeout
             
             # Handle both list and comma-separated string
             if isinstance(domains_input, str):
-                domains = [d.strip() for d in domains_input.split(',') if d.strip()]
+                domains_list = [d.strip() for d in domains_input.split(',') if d.strip()]
             elif isinstance(domains_input, list):
-                domains = [str(d).strip() for d in domains_input if str(d).strip()]
-        else:
-            # GET request
-            domains_param = request.args.get('domains', '')
-            if domains_param:
-                domains = [d.strip() for d in domains_param.split(',') if d.strip()]
-            # Get force parameter from query string
-            force_param = request.args.get('force', '').lower()
-            force = force_param in ('true', '1', 'yes')
-            # Get retry parameters
-            http_retries_param = request.args.get('http_retries', '1')
-            try:
-                http_retries = int(http_retries_param)
-            except ValueError:
-                http_retries = 1
-            ssl_retries_param = request.args.get('ssl_retries', '1')
-            try:
-                ssl_retries = int(ssl_retries_param)
-            except ValueError:
-                ssl_retries = 1
-            domain_retries_param = request.args.get('domain_retries', '1')
-            try:
-                domain_retries = int(domain_retries_param)
-            except ValueError:
-                domain_retries = 1
-            # Get timeout parameter
-            timeout_param = request.args.get('timeout', '30')
-            try:
-                timeout = int(timeout_param)
-            except ValueError:
-                timeout = 30
+                domains_list = [str(d).strip() for d in domains_input if str(d).strip()]
+        # Handle GET request with query parameters
+        elif domains:
+            domains_list = [d.strip() for d in domains.split(',') if d.strip()]
         
-        if not domains:
-            return jsonify({
-                "error": "No domains provided",
-                "status_code": 400,
-                "usage": {
-                    "POST": {
-                        "domains": ["example.com", "google.com"],
-                        "force": True,
-                        "http_retries": 1,
-                        "ssl_retries": 1,
-                        "domain_retries": 1,
-                        "timeout": 30
-                    },
-                    "GET": "/check?domains=example.com,google.com&force=true&http_retries=1&ssl_retries=1&domain_retries=1&timeout=30"
+        if not domains_list:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "No domains provided",
+                    "status_code": 400,
+                    "usage": {
+                        "POST": {
+                            "domains": ["example.com", "google.com"],
+                            "force": True,
+                            "http_retries": 1,
+                            "ssl_retries": 1,
+                            "domain_retries": 1,
+                            "timeout": 30
+                        },
+                        "GET": "/check?domains=example.com,google.com&force=true&http_retries=1&ssl_retries=1&domain_retries=1&timeout=30"
+                    }
                 }
-            }), 400
+            )
         
         # Validate domain count (prevent abuse)
-        if len(domains) > 100:
-            return jsonify({
-                "error": "Too many domains. Maximum 100 domains per request.",
-                "status_code": 400
-            }), 400
+        if len(domains_list) > 100:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Too many domains. Maximum 100 domains per request.",
+                    "status_code": 400
+                }
+            )
         
-        # Store original input for each domain
-        original_inputs = domains.copy()
-        
-        # Validate retries and timeout
+        # Validate retries and timeout (already validated by Pydantic, but double-check)
         if http_retries < 0 or http_retries > 10:
-            return jsonify({
-                "error": "Invalid http_retries value. Must be between 0 and 10.",
-                "status_code": 400
-            }), 400
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Invalid http_retries value. Must be between 0 and 10.",
+                    "status_code": 400
+                }
+            )
         
         if ssl_retries < 0 or ssl_retries > 10:
-            return jsonify({
-                "error": "Invalid ssl_retries value. Must be between 0 and 10.",
-                "status_code": 400
-            }), 400
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Invalid ssl_retries value. Must be between 0 and 10.",
+                    "status_code": 400
+                }
+            )
         
         if domain_retries < 0 or domain_retries > 10:
-            return jsonify({
-                "error": "Invalid domain_retries value. Must be between 0 and 10.",
-                "status_code": 400
-            }), 400
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Invalid domain_retries value. Must be between 0 and 10.",
+                    "status_code": 400
+                }
+            )
         
         if timeout < 1 or timeout > 300:
-            return jsonify({
-                "error": "Invalid timeout value. Must be between 1 and 300 seconds.",
-                "status_code": 400
-            }), 400
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Invalid timeout value. Must be between 1 and 300 seconds.",
+                    "status_code": 400
+                }
+            )
         
         # Check domains in parallel
         results = []
-        with ThreadPoolExecutor(max_workers=min(len(domains), 10)) as executor:
-            future_to_domain = {executor.submit(check_ssl_certificate, domain, domain, force, http_retries, ssl_retries, domain_retries, timeout): domain for domain in domains}
+        with ThreadPoolExecutor(max_workers=min(len(domains_list), 10)) as executor:
+            future_to_domain = {
+                executor.submit(check_ssl_certificate, domain, domain, force, http_retries, ssl_retries, domain_retries, timeout): domain 
+                for domain in domains_list
+            }
             for future in as_completed(future_to_domain):
                 try:
                     result = future.result()
@@ -195,7 +175,6 @@ def check_domains():
                 except Exception as e:
                     domain = future_to_domain[future]
                     # Ensure all required fields are present even in error case
-                    from datetime import datetime, timezone
                     error_result = {
                         "domain": domain,
                         "input": domain,
@@ -215,89 +194,87 @@ def check_domains():
                     results.append(error_result)
         
         # Sort results to match input order
-        domain_order = {domain: idx for idx, domain in enumerate(domains)}
+        domain_order = {domain: idx for idx, domain in enumerate(domains_list)}
         results.sort(key=lambda x: domain_order.get(x.get("domain"), 999))
         
         # Return 200 even if some domains had errors (partial success is still success)
         # Individual domain errors are included in the results
-        return jsonify(results), 200
+        return results
         
+    except HTTPException:
+        raise
     except Exception as e:
         # Unexpected server error
-        return jsonify({
-            "error": "Internal server error",
-            "message": str(e),
-            "status_code": 500
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Internal server error",
+                "message": str(e),
+                "status_code": 500
+            }
+        )
 
-@app.route('/cache/clear', methods=['POST', 'DELETE'])
-def clear_cache_endpoint():
+@app.post("/cache/clear", tags=["Cache Management"])
+@app.delete("/cache/clear", tags=["Cache Management"])
+async def clear_cache_endpoint(
+    request: Optional[ClearCacheRequest] = Body(None, description="Request body for POST requests"),
+    domains: Optional[str] = Query(None, description="Comma-separated list of domains (for GET/DELETE requests)")
+):
     """
-    Clear cache endpoint.
+    Clear cache for specific domain(s) or all domains.
     
-    POST /cache/clear
-    DELETE /cache/clear
-    Body (optional): {
-        "domains": ["example.com", "google.com"]  // If omitted, clears all cache
-    }
-    
-    Query parameter (optional): ?domains=example.com,google.com
+    Supports POST (JSON body) and DELETE (query parameters) methods.
     
     Returns:
     - 200: Success - Cache cleared
-    - 400: Bad Request - Invalid input
+    - 500: Internal Server Error
     """
     try:
-        domains = []
+        domains_list = []
         
-        if request.method == 'POST':
-            if request.is_json:
-                data = request.get_json() or {}
-                domains_input = data.get('domains', [])
-                
-                # Handle both list and comma-separated string
-                if isinstance(domains_input, str):
-                    domains = [d.strip() for d in domains_input.split(',') if d.strip()]
-                elif isinstance(domains_input, list):
-                    domains = [str(d).strip() for d in domains_input if str(d).strip()]
-            else:
-                # POST without JSON body - check query params
-                domains_param = request.args.get('domains', '')
-                if domains_param:
-                    domains = [d.strip() for d in domains_param.split(',') if d.strip()]
-        else:
-            # DELETE request - check query params
-            domains_param = request.args.get('domains', '')
-            if domains_param:
-                domains = [d.strip() for d in domains_param.split(',') if d.strip()]
+        # Handle POST request with JSON body
+        if request and request.domains:
+            domains_input = request.domains
+            if isinstance(domains_input, str):
+                domains_list = [d.strip() for d in domains_input.split(',') if d.strip()]
+            elif isinstance(domains_input, list):
+                domains_list = [str(d).strip() for d in domains_input if str(d).strip()]
+        # Handle DELETE/GET request with query parameters
+        elif domains:
+            domains_list = [d.strip() for d in domains.split(',') if d.strip()]
         
-        # Clear cache (if domains is empty, clears all)
-        result = clear_cache(domains if domains else None)
+        # Clear cache (if domains_list is empty, clears all)
+        result = clear_cache(domains_list if domains_list else None)
         result["status_code"] = 200
         
-        return jsonify(result), 200
+        return result
         
     except Exception as e:
-        return jsonify({
-            "error": "Failed to clear cache",
-            "message": str(e),
-            "status_code": 500
-        }), 500
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to clear cache",
+                "message": str(e),
+                "status_code": 500
+            }
+        )
 
-@app.route('/', methods=['GET'])
-def index():
+@app.get("/api-docs", tags=["Documentation"], include_in_schema=False)
+async def api_docs():
     """
-    API documentation endpoint.
+    API documentation endpoint (JSON format).
     
     Returns:
     - 200: API documentation
     """
-    return jsonify({
+    return {
         "service": "Domain Checker API",
         "version": "1.0.0",
         "status_code": 200,
         "endpoints": {
-            "GET /": "API documentation",
+            "GET /": "Redirects to Swagger UI",
+            "GET /docs": "Swagger UI documentation",
+            "GET /redoc": "ReDoc documentation",
             "GET /health": "Health check (200: healthy)",
             "POST /check": "Check domain(s) - send JSON body with 'domains' array",
             "GET /check": "Check domain(s) - use 'domains' query parameter (comma-separated)",
@@ -332,10 +309,10 @@ def index():
             "DELETE /cache/clear": "/cache/clear?domains=example.com,google.com",
             "POST /cache/clear (clear all)": "{}"
         }
-    }), 200
+    }
 
 if __name__ == '__main__':
+    import uvicorn
     port = int(os.getenv('PORT', 5000))
     host = os.getenv('HOST', '0.0.0.0')
-    app.run(host=host, port=port, debug=False)
-
+    uvicorn.run(app, host=host, port=port)

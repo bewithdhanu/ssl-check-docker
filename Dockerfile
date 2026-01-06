@@ -25,6 +25,6 @@ EXPOSE 5000
 ENV PORT=5000
 ENV HOST=0.0.0.0
 
-# Run the web service
-CMD ["python3", "/app/app.py"]
+# Run the web service with uvicorn
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000"]
 
