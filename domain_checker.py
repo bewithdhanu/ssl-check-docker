@@ -366,6 +366,44 @@ def _clean_domain(domain: str) -> str:
     return domain.replace('https://', '').replace('http://', '').strip('/')
 
 
+def _extract_domain_from_url(url: str) -> str:
+    """
+    Extract domain from full URL (with path and query params).
+    
+    Args:
+        url: Full URL (e.g., "https://pro.example.com/path?query=value")
+        
+    Returns:
+        Domain name (e.g., "pro.example.com")
+    """
+    # Remove protocol if present
+    url = url.replace('https://', '').replace('http://', '')
+    
+    # Extract domain (everything before first /)
+    domain = url.split('/')[0]
+    
+    # Remove port if present
+    if ':' in domain:
+        domain = domain.split(':')[0]
+    
+    return domain.strip()
+
+
+def _extract_subdomain_from_url(url: str) -> str:
+    """
+    Extract subdomain from full URL for SSL check.
+    If URL is https://pro.example.com/path, returns "pro.example.com"
+    If URL is https://example.com/path, returns "example.com"
+    
+    Args:
+        url: Full URL
+        
+    Returns:
+        Subdomain/domain for SSL check
+    """
+    return _extract_domain_from_url(url)
+
+
 def _get_main_domain(domain: str) -> str:
     """
     Extract main domain from subdomain.
