@@ -5,11 +5,41 @@ REST API wrapper for domain checker functionality.
 """
 
 from flask import Flask, request, jsonify
+from flasgger import Swagger
 from domain_checker import check_ssl_certificate, clear_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 
 app = Flask(__name__)
+
+# Configure Swagger UI
+swagger_config = {
+    "headers": [],
+    "specs": [
+        {
+            "endpoint": "apispec",
+            "route": "/apispec.json",
+            "rule_filter": lambda rule: True,
+            "model_filter": lambda tag: True,
+        }
+    ],
+    "static_url_path": "/flasgger_static",
+    "swagger_ui": True,
+    "specs_route": "/swagger"
+}
+
+swagger_template = {
+    "swagger": "2.0",
+    "info": {
+        "title": "Domain Checker API",
+        "description": "API for checking SSL certificates, domain expiry, health status, and website logos",
+        "version": "1.0.0"
+    },
+    "basePath": "/",
+    "schemes": ["http", "https"]
+}
+
+swagger = Swagger(app, config=swagger_config, template=swagger_template)
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -250,13 +280,17 @@ def index():
             "POST /check": {
                 "domains": ["example.com", "google.com"],
                 "force": True,
-                "retries": 1,
+                "http_retries": 1,
+                "ssl_retries": 1,
+                "domain_retries": 1,
                 "timeout": 30
             },
-            "GET /check": "/check?domains=example.com,google.com&force=true&retries=1&timeout=30",
+            "GET /check": "/check?domains=example.com,google.com&force=true&http_retries=1&ssl_retries=1&domain_retries=1&timeout=30",
             "POST /check (full URL)": {
                 "domains": ["https://pro.example.com/path?query=value"],
-                "retries": 2,
+                "http_retries": 2,
+                "ssl_retries": 1,
+                "domain_retries": 1,
                 "timeout": 60
             },
             "POST /cache/clear": {

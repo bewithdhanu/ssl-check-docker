@@ -84,8 +84,10 @@ CACHE_EXPIRY_HOURS = 1  # Cache all checks for 1 hour
 LOGO_CACHE_EXPIRY_HOURS = 1  # Cache logo for 1 hour (same as other checks)
 DOMAIN_CACHE_EXPIRY_HOURS = 1  # Cache domain expiry for 1 hour (same as other checks)
 
-# Retry and timeout configuration
-DEFAULT_RETRIES = 1  # Default number of retries for failed checks
+# Retry and timeout configuration - separate defaults for each check type
+DEFAULT_HTTP_RETRIES = 1  # Default number of retries for HTTP/health checks
+DEFAULT_SSL_RETRIES = 1  # Default number of retries for SSL checks
+DEFAULT_DOMAIN_RETRIES = 1  # Default number of retries for domain expiry checks
 DEFAULT_HTTP_TIMEOUT = 30  # Default HTTP timeout in seconds
 
 
@@ -827,7 +829,7 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
         return None, details
 
 
-def check_health_and_response_time(domain: str, timeout: int = DEFAULT_HTTP_TIMEOUT, retries: int = DEFAULT_RETRIES) -> Dict[str, Any]:
+def check_health_and_response_time(domain: str, timeout: int = DEFAULT_HTTP_TIMEOUT, retries: int = DEFAULT_HTTP_RETRIES) -> Dict[str, Any]:
     """
     Check HTTP/HTTPS health status and measure response time with retry logic.
     SSL certificate verification is disabled for health checks to handle
@@ -1159,7 +1161,7 @@ def save_logo_to_cache(domain: str, logo_url: Optional[str]) -> None:
     save_cache(cache)
 
 
-def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, retries: int = DEFAULT_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT) -> Dict[str, Any]:
+def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ssl_retries: int = DEFAULT_SSL_RETRIES, http_retries: int = DEFAULT_HTTP_RETRIES, domain_retries: int = DEFAULT_DOMAIN_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT) -> Dict[str, Any]:
     """
     Perform actual SSL check (internal function) with retry logic.
     
@@ -1210,33 +1212,33 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, re
             last_error = f"DNS resolution failed: {str(e)}"
             result["ssl_error"] = last_error
             result["ssl_status"] = "DNS_ERROR"
-            if attempt < retries:
+            if attempt < ssl_retries:
                 time.sleep(0.5)
                 continue
         except socket.timeout:
             last_error = "Connection timeout - site appears to be down"
             result["ssl_status"] = "SITE_DOWN"
             result["ssl_error"] = last_error
-            if attempt < retries:
+            if attempt < ssl_retries:
                 time.sleep(1)
                 continue
         except ssl.SSLError as e:
             last_error = f"SSL error: {str(e)}"
             result["ssl_error"] = last_error
             result["ssl_status"] = "SSL_ERROR"
-            if attempt < retries:
+            if attempt < ssl_retries:
                 time.sleep(0.5)
                 continue
         except Exception as e:
             last_error = f"Unexpected SSL error: {str(e)}"
             result["ssl_error"] = last_error
             result["ssl_status"] = "ERROR"
-            if attempt < retries:
+            if attempt < ssl_retries:
                 time.sleep(0.5)
                 continue
     
-    # Check health and response time (use configurable timeout and retries)
-    health_info = check_health_and_response_time(clean_domain, timeout=timeout, retries=retries)
+    # Check health and response time (use configurable timeout and HTTP retries)
+    health_info = check_health_and_response_time(clean_domain, timeout=timeout, retries=http_retries)
     # Update result with health info (will overwrite None values)
     result.update(health_info)
     
@@ -1255,7 +1257,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, re
             result["domain_days_left"] = main_domain_entry['domain_days_left']
     else:
         # Perform whois check on main domain with retry logic
-        domain_expiry, whois_details = check_domain_expiry_with_retry(main_domain, retries=retries)
+        domain_expiry, whois_details = check_domain_expiry_with_retry(main_domain, retries=domain_retries)
         
         # Only cache if we successfully got domain expiry and no error occurred
         if domain_expiry and not whois_details.get('error'):
@@ -1363,7 +1365,7 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None, for
         return result
     
     # Cache miss or needs refresh - perform actual checks
-    check_result = _perform_ssl_check(clean_domain, now, force=force, retries=retries, timeout=timeout)
+    check_result = _perform_ssl_check(clean_domain, now, force=force, ssl_retries=ssl_retries, http_retries=http_retries, domain_retries=domain_retries, timeout=timeout)
     result.update(check_result)
     
     # Ensure input is preserved
