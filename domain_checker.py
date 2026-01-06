@@ -1301,7 +1301,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
             result["domain_days_left"] = main_domain_entry['domain_days_left']
     else:
         # Perform whois check on main domain with retry logic
-        domain_expiry, whois_details = check_domain_expiry_with_retry(main_domain, retries=domain_retries)
+        domain_expiry, whois_details = check_domain_expiry_with_retry(main_domain, retries=domain_retries, timeout=whois_timeout)
         
         # Only cache if we successfully got domain expiry and no error occurred
         if domain_expiry and not whois_details.get('error'):
@@ -1415,7 +1415,7 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None, for
     
     logger.info(f"Cache miss for {domain_key} - performing fresh checks")
     # Cache miss or needs refresh - perform actual checks
-    check_result = _perform_ssl_check(clean_domain, now, force=force, ssl_retries=ssl_retries, http_retries=http_retries, domain_retries=domain_retries, timeout=timeout)
+    check_result = _perform_ssl_check(clean_domain, now, force=force, ssl_retries=ssl_retries, http_retries=http_retries, domain_retries=domain_retries, timeout=timeout, ssl_timeout=ssl_timeout, whois_timeout=whois_timeout)
     result.update(check_result)
     
     # Ensure input is preserved
