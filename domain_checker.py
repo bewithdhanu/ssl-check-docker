@@ -736,7 +736,7 @@ def check_domain_expiry(domain: str, timeout: int = DEFAULT_WHOIS_TIMEOUT) -> Tu
                     ['whois', '-h', whois_server, clean_domain],
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=timeout
                 )
                 
                 if referral_result.stdout:
@@ -750,7 +750,7 @@ def check_domain_expiry(domain: str, timeout: int = DEFAULT_WHOIS_TIMEOUT) -> Tu
                     ['whois', '-h', registrar_whois_server, clean_domain],
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=timeout
                 )
                 
                 if registrar_result.stdout:
