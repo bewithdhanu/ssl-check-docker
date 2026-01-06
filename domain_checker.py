@@ -1302,7 +1302,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
     return result
 
 
-def check_ssl_certificate(domain: str, original_input: Optional[str] = None, force: bool = False, retries: int = DEFAULT_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT) -> Dict[str, Any]:
+def check_ssl_certificate(domain: str, original_input: Optional[str] = None, force: bool = False, http_retries: int = DEFAULT_HTTP_RETRIES, ssl_retries: int = DEFAULT_SSL_RETRIES, domain_retries: int = DEFAULT_DOMAIN_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT) -> Dict[str, Any]:
     """
     Check SSL certificate for a given domain with caching, retry logic, and configurable timeout.
     
@@ -1310,7 +1310,9 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None, for
         domain: Domain name or full URL to check
         original_input: Original user input (as provided) - optional
         force: If True, bypass cache and force fresh check
-        retries: Number of retries if checks fail (default: 1)
+        http_retries: Number of retries for HTTP/health checks (default: 1)
+        ssl_retries: Number of retries for SSL checks (default: 1)
+        domain_retries: Number of retries for domain expiry checks (default: 1)
         timeout: HTTP timeout in seconds (default: 30)
         
     Returns:
