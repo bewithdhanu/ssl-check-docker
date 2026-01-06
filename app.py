@@ -219,9 +219,10 @@ def index():
         },
         "examples": {
             "POST /check": {
-                "domains": ["example.com", "google.com"]
+                "domains": ["example.com", "google.com"],
+                "force": True
             },
-            "GET /check": "/check?domains=example.com,google.com",
+            "GET /check": "/check?domains=example.com,google.com&force=true",
             "POST /cache/clear": {
                 "domains": ["example.com", "google.com"]
             },
