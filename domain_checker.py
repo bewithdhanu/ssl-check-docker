@@ -97,7 +97,9 @@ DOMAIN_CACHE_EXPIRY_HOURS = 1  # Cache domain expiry for 1 hour (same as other c
 DEFAULT_HTTP_RETRIES = 1  # Default number of retries for HTTP/health checks
 DEFAULT_SSL_RETRIES = 1  # Default number of retries for SSL checks
 DEFAULT_DOMAIN_RETRIES = 1  # Default number of retries for domain expiry checks
-DEFAULT_HTTP_TIMEOUT = 30  # Default HTTP timeout in seconds
+DEFAULT_HTTP_TIMEOUT = 10  # Default HTTP timeout in seconds (reduced from 30 for faster failure detection)
+DEFAULT_SSL_TIMEOUT = 5  # Default SSL connection timeout in seconds
+DEFAULT_WHOIS_TIMEOUT = 5  # Default WHOIS lookup timeout in seconds
 
 
 def load_cache() -> Dict[str, Dict[str, Any]]:
@@ -549,7 +551,7 @@ def _try_rdap_lookup(domain: str) -> Optional[str]:
         return None
 
 
-def check_domain_expiry_with_retry(domain: str, retries: int = DEFAULT_DOMAIN_RETRIES) -> Tuple[Optional[str], Dict[str, Any]]:
+def check_domain_expiry_with_retry(domain: str, retries: int = DEFAULT_DOMAIN_RETRIES, timeout: int = DEFAULT_WHOIS_TIMEOUT) -> Tuple[Optional[str], Dict[str, Any]]:
     """
     Check domain expiry date using whois with retry logic.
     
@@ -570,7 +572,7 @@ def check_domain_expiry_with_retry(domain: str, retries: int = DEFAULT_DOMAIN_RE
     for attempt in range(retries + 1):
         if attempt > 0:
             logger.info(f"Domain expiry retry attempt {attempt + 1}/{retries + 1} for {domain_to_check}")
-        expiry, details = check_domain_expiry(domain_to_check)
+        expiry, details = check_domain_expiry(domain_to_check, timeout=timeout)
         
         # If successful or non-retryable error, return immediately
         if expiry:
@@ -603,7 +605,7 @@ def check_domain_expiry_with_retry(domain: str, retries: int = DEFAULT_DOMAIN_RE
     return None, {"error": "Domain expiry check failed after retries"}
 
 
-def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
+def check_domain_expiry(domain: str, timeout: int = DEFAULT_WHOIS_TIMEOUT) -> Tuple[Optional[str], Dict[str, Any]]:
     """
     Check domain expiry date using whois.
     Follows WHOIS referrals (like whois.registry.co for .co domains) similar to
@@ -626,11 +628,12 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
         whois_server = None
         
         # First attempt: query default WHOIS server
+        logger.debug(f"Querying WHOIS for {clean_domain} (timeout={timeout}s)")
         result = subprocess.run(
             ['whois', clean_domain],
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=timeout
         )
         
         # Known TLD-specific WHOIS servers (fallback if default whois fails)
@@ -762,7 +765,7 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
                 ['whois', '-h', fallback_server, clean_domain],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=timeout
             )
             
             if fallback_result.stdout:
@@ -1190,7 +1193,7 @@ def save_logo_to_cache(domain: str, logo_url: Optional[str]) -> None:
     save_cache(cache)
 
 
-def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ssl_retries: int = DEFAULT_SSL_RETRIES, http_retries: int = DEFAULT_HTTP_RETRIES, domain_retries: int = DEFAULT_DOMAIN_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT) -> Dict[str, Any]:
+def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ssl_retries: int = DEFAULT_SSL_RETRIES, http_retries: int = DEFAULT_HTTP_RETRIES, domain_retries: int = DEFAULT_DOMAIN_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT, ssl_timeout: int = DEFAULT_SSL_TIMEOUT) -> Dict[str, Any]:
     """
     Perform actual SSL check (internal function) with retry logic.
     
@@ -1226,9 +1229,9 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
         if attempt > 0:
             logger.info(f"SSL check retry attempt {attempt + 1}/{ssl_retries + 1} for {ssl_domain}")
         try:
-            logger.debug(f"Connecting to {ssl_domain}:443 for SSL check")
+            logger.debug(f"Connecting to {ssl_domain}:443 for SSL check (timeout={ssl_timeout}s)")
             context = ssl.create_default_context()
-            with socket.create_connection((ssl_domain, 443), timeout=8) as sock:
+            with socket.create_connection((ssl_domain, 443), timeout=ssl_timeout) as sock:
                 with context.wrap_socket(sock, server_hostname=ssl_domain) as ssock:
                     cert = ssock.getpeercert()
                     expiry_date_str = cert['notAfter']
@@ -1343,7 +1346,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
     return result
 
 
-def check_ssl_certificate(domain: str, original_input: Optional[str] = None, force: bool = False, http_retries: int = DEFAULT_HTTP_RETRIES, ssl_retries: int = DEFAULT_SSL_RETRIES, domain_retries: int = DEFAULT_DOMAIN_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT) -> Dict[str, Any]:
+def check_ssl_certificate(domain: str, original_input: Optional[str] = None, force: bool = False, http_retries: int = DEFAULT_HTTP_RETRIES, ssl_retries: int = DEFAULT_SSL_RETRIES, domain_retries: int = DEFAULT_DOMAIN_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT, ssl_timeout: int = DEFAULT_SSL_TIMEOUT, whois_timeout: int = DEFAULT_WHOIS_TIMEOUT) -> Dict[str, Any]:
     """
     Check SSL certificate for a given domain with caching, retry logic, and configurable timeout.
     

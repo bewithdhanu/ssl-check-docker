@@ -62,7 +62,9 @@ async def check_domains(
     http_retries: int = Query(1, ge=0, le=10, description="Number of retries for HTTP checks"),
     ssl_retries: int = Query(1, ge=0, le=10, description="Number of retries for SSL checks"),
     domain_retries: int = Query(1, ge=0, le=10, description="Number of retries for domain checks"),
-    timeout: int = Query(30, ge=1, le=300, description="HTTP timeout in seconds")
+    timeout: int = Query(10, ge=1, le=300, description="HTTP timeout in seconds (default: 10)"),
+    ssl_timeout: int = Query(5, ge=1, le=60, description="SSL connection timeout in seconds (default: 5)"),
+    whois_timeout: int = Query(5, ge=1, le=60, description="WHOIS lookup timeout in seconds (default: 5)")
 ):
     """
     Check domain(s) endpoint.
@@ -75,7 +77,7 @@ async def check_domains(
     - 500: Internal Server Error (unexpected server error)
     """
     try:
-        logger.info(f"Check request received: domains={domains}, force={force}, http_retries={http_retries}, ssl_retries={ssl_retries}, domain_retries={domain_retries}, timeout={timeout}")
+        logger.info(f"Check request received: domains={domains}, force={force}, http_retries={http_retries}, ssl_retries={ssl_retries}, domain_retries={domain_retries}, timeout={timeout}, ssl_timeout={ssl_timeout}, whois_timeout={whois_timeout}")
         
         # Parse comma-separated domains
         domains_list = [d.strip() for d in domains.split(',') if d.strip()]
@@ -143,7 +145,7 @@ async def check_domains(
         results = []
         with ThreadPoolExecutor(max_workers=min(len(domains_list), 10)) as executor:
             future_to_domain = {
-                executor.submit(check_ssl_certificate, domain, domain, force, http_retries, ssl_retries, domain_retries, timeout): domain 
+                executor.submit(check_ssl_certificate, domain, domain, force, http_retries, ssl_retries, domain_retries, timeout, ssl_timeout, whois_timeout): domain 
                 for domain in domains_list
             }
             for future in as_completed(future_to_domain):
