@@ -84,6 +84,10 @@ CACHE_EXPIRY_HOURS = 1  # Cache all checks for 1 hour
 LOGO_CACHE_EXPIRY_HOURS = 1  # Cache logo for 1 hour (same as other checks)
 DOMAIN_CACHE_EXPIRY_HOURS = 1  # Cache domain expiry for 1 hour (same as other checks)
 
+# Retry and timeout configuration
+DEFAULT_RETRIES = 1  # Default number of retries for failed checks
+DEFAULT_HTTP_TIMEOUT = 30  # Default HTTP timeout in seconds
+
 
 def load_cache() -> Dict[str, Dict[str, Any]]:
     """Load cache from file."""
@@ -489,6 +493,53 @@ def _try_rdap_lookup(domain: str) -> Optional[str]:
         return None
 
 
+def check_domain_expiry_with_retry(domain: str, retries: int = DEFAULT_RETRIES) -> Tuple[Optional[str], Dict[str, Any]]:
+    """
+    Check domain expiry date using whois with retry logic.
+    
+    Args:
+        domain: Domain name to check (will extract domain from URL if full URL provided)
+        retries: Number of retries if check fails (default: 1)
+        
+    Returns:
+        Tuple of (domain expiry date string in YYYY-MM-DD HH:MM:SS format or None, details dict)
+    """
+    # Extract domain from URL if it's a full URL
+    domain_to_check = _extract_domain_from_url(domain) if ('://' in domain or '/' in domain) else domain
+    
+    last_error = None
+    last_details = None
+    
+    for attempt in range(retries + 1):
+        expiry, details = check_domain_expiry(domain_to_check)
+        
+        # If successful or non-retryable error, return immediately
+        if expiry:
+            return expiry, details
+        
+        # Check if error is retryable
+        error_msg = details.get('error', '')
+        if error_msg:
+            # Don't retry on rate limits or permanent errors
+            if 'rate limit' in error_msg.lower() or 'permanent' in error_msg.lower() or 'not found' in error_msg.lower():
+                return expiry, details
+        
+        last_error = error_msg
+        last_details = details
+        
+        # Wait before retry
+        if attempt < retries:
+            time.sleep(1)
+    
+    # All retries failed
+    if last_details:
+        if last_error:
+            last_details["error"] = f"{last_error} (after {retries + 1} attempts)"
+        return None, last_details
+    
+    return None, {"error": "Domain expiry check failed after retries"}
+
+
 def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
     """
     Check domain expiry date using whois.
@@ -738,19 +789,28 @@ def check_domain_expiry(domain: str) -> Tuple[Optional[str], Dict[str, Any]]:
         return None, details
 
 
-def check_health_and_response_time(domain: str) -> Dict[str, Any]:
+def check_health_and_response_time(domain: str, timeout: int = DEFAULT_HTTP_TIMEOUT, retries: int = DEFAULT_RETRIES) -> Dict[str, Any]:
     """
-    Check HTTP/HTTPS health status and measure response time.
+    Check HTTP/HTTPS health status and measure response time with retry logic.
     SSL certificate verification is disabled for health checks to handle
     domains with self-signed or invalid certificates.
     
     Args:
-        domain: Domain name to check
+        domain: Domain name or full URL to check
+        timeout: HTTP timeout in seconds (default: 30)
+        retries: Number of retries if check fails (default: 1)
         
     Returns:
         Dictionary with health_status, response_time_ms, and http_status_code
     """
-    clean_domain = _clean_domain(domain)
+    # Handle full URLs - preserve original URL for health check
+    if domain.startswith('http://') or domain.startswith('https://'):
+        url_to_check = domain
+        clean_domain = _extract_domain_from_url(domain)
+    else:
+        clean_domain = _clean_domain(domain)
+        url_to_check = None  # Will construct below
+    
     result = {
         "health_status": "UNKNOWN",
         "response_time_ms": None,
@@ -760,45 +820,71 @@ def check_health_and_response_time(domain: str) -> Dict[str, Any]:
     # Create SSL context that doesn't verify certificates for health checks
     ssl_context = ssl._create_unverified_context()
     
-    # Try HTTPS first, then HTTP
-    for protocol in ['https', 'http']:
-        url = f"{protocol}://{clean_domain}"
-        start_time = time.time()
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'SSL-Checker/1.0'})
-            
-            # Use SSL context for HTTPS, normal for HTTP
-            if protocol == 'https':
-                # Create opener with unverified SSL context
-                https_handler = urllib.request.HTTPSHandler(context=ssl_context)
-                opener = urllib.request.build_opener(https_handler)
-                with opener.open(req, timeout=8) as response:
-                    elapsed_time = (time.time() - start_time) * 1000
-                    status_code = response.getcode()
-                    result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
-                    result["response_time_ms"] = round(elapsed_time, 2)
-                    result["http_status_code"] = status_code
-                    return result
-            else:
-                # HTTP - no SSL needed
-                with urllib.request.urlopen(req, timeout=8) as response:
-                    elapsed_time = (time.time() - start_time) * 1000
-                    status_code = response.getcode()
-                    result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
-                    result["response_time_ms"] = round(elapsed_time, 2)
-                    result["http_status_code"] = status_code
-                    return result
-        except urllib.error.HTTPError as e:
-            elapsed_time = (time.time() - start_time) * 1000
-            status_code = e.code
-            result["health_status"] = "UP" if 200 <= status_code < 500 else "DOWN"
-            result["response_time_ms"] = round(elapsed_time, 2)
-            result["http_status_code"] = status_code
-            return result
-        except (urllib.error.URLError, socket.timeout, ssl.SSLError, Exception):
-            # Continue to next protocol or return DOWN if both fail
-            continue
+    # Determine protocols to try
+    if url_to_check:
+        # Use the original URL's protocol
+        protocols = [url_to_check.split('://')[0]]
+        base_url = url_to_check
+    else:
+        # Try HTTPS first, then HTTP
+        protocols = ['https', 'http']
+        base_url = None
     
+    last_error = None
+    
+    # Retry logic
+    for attempt in range(retries + 1):
+        for protocol in protocols:
+            if url_to_check:
+                url = url_to_check
+            else:
+                url = f"{protocol}://{clean_domain}"
+            
+            start_time = time.time()
+            try:
+                req = urllib.request.Request(url, headers={'User-Agent': 'SSL-Checker/1.0'})
+                
+                # Use SSL context for HTTPS, normal for HTTP
+                if protocol == 'https' or url.startswith('https://'):
+                    # Create opener with unverified SSL context
+                    https_handler = urllib.request.HTTPSHandler(context=ssl_context)
+                    opener = urllib.request.build_opener(https_handler)
+                    with opener.open(req, timeout=timeout) as response:
+                        elapsed_time = (time.time() - start_time) * 1000
+                        status_code = response.getcode()
+                        result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
+                        result["response_time_ms"] = round(elapsed_time, 2)
+                        result["http_status_code"] = status_code
+                        return result
+                else:
+                    # HTTP - no SSL needed
+                    with urllib.request.urlopen(req, timeout=timeout) as response:
+                        elapsed_time = (time.time() - start_time) * 1000
+                        status_code = response.getcode()
+                        result["health_status"] = "UP" if 200 <= status_code < 400 else "DOWN"
+                        result["response_time_ms"] = round(elapsed_time, 2)
+                        result["http_status_code"] = status_code
+                        return result
+            except urllib.error.HTTPError as e:
+                elapsed_time = (time.time() - start_time) * 1000
+                status_code = e.code
+                result["health_status"] = "UP" if 200 <= status_code < 500 else "DOWN"
+                result["response_time_ms"] = round(elapsed_time, 2)
+                result["http_status_code"] = status_code
+                return result
+            except (urllib.error.URLError, socket.timeout, ssl.SSLError, Exception) as e:
+                last_error = str(e)
+                # Continue to next protocol or retry
+                if attempt < retries:
+                    time.sleep(0.5)  # Brief delay before retry
+                    continue
+                continue
+        
+        # If all protocols failed and we have retries left, wait before retrying
+        if attempt < retries:
+            time.sleep(1)  # Wait 1 second between retries
+    
+    # All attempts failed
     result["health_status"] = "DOWN"
     result["http_status_code"] = None
     return result
@@ -1098,8 +1184,8 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False) ->
         if 'domain_days_left' in main_domain_entry:
             result["domain_days_left"] = main_domain_entry['domain_days_left']
     else:
-        # Perform whois check on main domain
-        domain_expiry, whois_details = check_domain_expiry(main_domain)
+        # Perform whois check on main domain with retry logic
+        domain_expiry, whois_details = check_domain_expiry_with_retry(main_domain, retries=retries)
         
         # Only cache if we successfully got domain expiry and no error occurred
         if domain_expiry and not whois_details.get('error'):
@@ -1142,24 +1228,33 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False) ->
     return result
 
 
-def check_ssl_certificate(domain: str, original_input: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
+def check_ssl_certificate(domain: str, original_input: Optional[str] = None, force: bool = False, retries: int = DEFAULT_RETRIES, timeout: int = DEFAULT_HTTP_TIMEOUT) -> Dict[str, Any]:
     """
-    Check SSL certificate for a given domain with caching.
+    Check SSL certificate for a given domain with caching, retry logic, and configurable timeout.
     
     Args:
-        domain: Domain name to check
+        domain: Domain name or full URL to check
         original_input: Original user input (as provided) - optional
         force: If True, bypass cache and force fresh check
+        retries: Number of retries if checks fail (default: 1)
+        timeout: HTTP timeout in seconds (default: 30)
         
     Returns:
         Dictionary with all required fields always present (null if data unavailable)
     """
-    clean_domain = _clean_domain(domain)
+    # Handle full URLs - preserve original for display but extract domain for processing
+    if domain.startswith('http://') or domain.startswith('https://'):
+        clean_domain = domain  # Keep full URL for health check
+        domain_key = _extract_domain_from_url(domain)  # Use domain for cache key
+    else:
+        clean_domain = _clean_domain(domain)
+        domain_key = clean_domain
+    
     now = datetime.now(timezone.utc)
     
     # Initialize result with all required fields
     result = {
-        "domain": clean_domain,
+        "domain": domain_key,  # Store domain (not full URL) in result
         "input": original_input if original_input else domain,  # Store original input as-is
         "request_sent_datetime": now.strftime('%Y-%m-%d %H:%M:%S'),  # Request timestamp
         # SSL fields
@@ -1180,7 +1275,7 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None, for
     }
     
     # Check cache first (unless force=True)
-    cached_result = get_cached_result(clean_domain, force=force)
+    cached_result = get_cached_result(domain_key, force=force)
     if cached_result:
         # Update result with cached values, but ensure all fields are present
         result.update(cached_result)
@@ -1196,14 +1291,14 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None, for
         return result
     
     # Cache miss or needs refresh - perform actual checks
-    check_result = _perform_ssl_check(clean_domain, now, force=force)
+    check_result = _perform_ssl_check(clean_domain, now, force=force, retries=retries, timeout=timeout)
     result.update(check_result)
     
     # Ensure input is preserved
     result["input"] = original_input if original_input else domain
     
-    # Save to cache
-    save_to_cache(clean_domain, result)
+    # Save to cache (use domain_key, not full URL)
+    save_to_cache(domain_key, result)
     
     return result
 

@@ -46,6 +46,8 @@ def check_domains():
     try:
         domains = []
         force = False
+        retries = 1  # Default retries
+        timeout = 30  # Default timeout in seconds
         
         if request.method == 'POST':
             if not request.is_json:
@@ -57,6 +59,8 @@ def check_domains():
             data = request.get_json() or {}
             domains_input = data.get('domains', [])
             force = data.get('force', False)
+            retries = data.get('retries', 1)
+            timeout = data.get('timeout', 30)
             
             # Handle both list and comma-separated string
             if isinstance(domains_input, str):
@@ -71,6 +75,18 @@ def check_domains():
             # Get force parameter from query string
             force_param = request.args.get('force', '').lower()
             force = force_param in ('true', '1', 'yes')
+            # Get retries parameter
+            retries_param = request.args.get('retries', '1')
+            try:
+                retries = int(retries_param)
+            except ValueError:
+                retries = 1
+            # Get timeout parameter
+            timeout_param = request.args.get('timeout', '30')
+            try:
+                timeout = int(timeout_param)
+            except ValueError:
+                timeout = 30
         
         if not domains:
             return jsonify({
@@ -92,10 +108,23 @@ def check_domains():
         # Store original input for each domain
         original_inputs = domains.copy()
         
+        # Validate retries and timeout
+        if retries < 0 or retries > 10:
+            return jsonify({
+                "error": "Invalid retries value. Must be between 0 and 10.",
+                "status_code": 400
+            }), 400
+        
+        if timeout < 1 or timeout > 300:
+            return jsonify({
+                "error": "Invalid timeout value. Must be between 1 and 300 seconds.",
+                "status_code": 400
+            }), 400
+        
         # Check domains in parallel
         results = []
         with ThreadPoolExecutor(max_workers=min(len(domains), 10)) as executor:
-            future_to_domain = {executor.submit(check_ssl_certificate, domain, domain, force): domain for domain in domains}
+            future_to_domain = {executor.submit(check_ssl_certificate, domain, domain, force, retries, timeout): domain for domain in domains}
             for future in as_completed(future_to_domain):
                 try:
                     result = future.result()
@@ -220,9 +249,16 @@ def index():
         "examples": {
             "POST /check": {
                 "domains": ["example.com", "google.com"],
-                "force": True
+                "force": True,
+                "retries": 1,
+                "timeout": 30
             },
-            "GET /check": "/check?domains=example.com,google.com&force=true",
+            "GET /check": "/check?domains=example.com,google.com&force=true&retries=1&timeout=30",
+            "POST /check (full URL)": {
+                "domains": ["https://pro.example.com/path?query=value"],
+                "retries": 2,
+                "timeout": 60
+            },
             "POST /cache/clear": {
                 "domains": ["example.com", "google.com"]
             },
