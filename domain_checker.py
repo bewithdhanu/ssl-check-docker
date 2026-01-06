@@ -533,7 +533,7 @@ def _try_rdap_lookup(domain: str) -> Optional[str]:
         return None
 
 
-def check_domain_expiry_with_retry(domain: str, retries: int = DEFAULT_RETRIES) -> Tuple[Optional[str], Dict[str, Any]]:
+def check_domain_expiry_with_retry(domain: str, retries: int = DEFAULT_DOMAIN_RETRIES) -> Tuple[Optional[str], Dict[str, Any]]:
     """
     Check domain expiry date using whois with retry logic.
     
@@ -1192,7 +1192,7 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
     
     # Check SSL certificate with retry logic
     last_error = None
-    for attempt in range(retries + 1):
+    for attempt in range(ssl_retries + 1):
         try:
             context = ssl.create_default_context()
             with socket.create_connection((ssl_domain, 443), timeout=8) as sock:
