@@ -1386,6 +1386,12 @@ def _perform_ssl_check(clean_domain: str, now: datetime, force: bool = False, ss
         # Save to cache (even if None, to avoid repeated failed attempts)
         save_logo_to_cache(logo_domain, logo_url)
     
+    # Convert None to 0 for days_left fields
+    if result.get("ssl_days_left") is None:
+        result["ssl_days_left"] = 0
+    if result.get("domain_days_left") is None:
+        result["domain_days_left"] = 0
+    
     return result
 
 
