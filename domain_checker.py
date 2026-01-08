@@ -1460,6 +1460,11 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None, for
                      "domain_expiry_date", "domain_days_left", "domain_error", "website_logo"]:
             if field not in result:
                 result[field] = None
+        # Convert None to 0 for days_left fields
+        if result.get("ssl_days_left") is None:
+            result["ssl_days_left"] = 0
+        if result.get("domain_days_left") is None:
+            result["domain_days_left"] = 0
         return result
     
     logger.info(f"Cache miss for {domain_key} - performing fresh checks")
@@ -1541,14 +1546,14 @@ def main():
                         "input": domain,
                         "request_sent_datetime": datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
                         "ssl_expiry_date": None,
-                        "ssl_days_left": None,
+                        "ssl_days_left": 0,
                         "ssl_status": None,
                         "ssl_error": f"Unexpected error: {str(e)}",
                         "health_status": None,
                         "response_time_ms": None,
                         "http_status_code": None,
                         "domain_expiry_date": None,
-                        "domain_days_left": None,
+                        "domain_days_left": 0,
                         "domain_error": None
                     }
                     results.append(error_result)
