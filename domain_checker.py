@@ -1475,6 +1475,12 @@ def check_ssl_certificate(domain: str, original_input: Optional[str] = None, for
     # Ensure input is preserved
     result["input"] = original_input if original_input else domain
     
+    # Convert None to 0 for days_left fields (safety check)
+    if result.get("ssl_days_left") is None:
+        result["ssl_days_left"] = 0
+    if result.get("domain_days_left") is None:
+        result["domain_days_left"] = 0
+    
     # Save to cache (use domain_key, not full URL)
     logger.debug(f"Saving result to cache for {domain_key}")
     save_to_cache(domain_key, result)
